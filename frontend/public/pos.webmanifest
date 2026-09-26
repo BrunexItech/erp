@@ -1,0 +1,17 @@
+{
+  "name": "Point of Sale",
+  "short_name": "POS",
+  "description": "Checkout till — sales post straight to stock and the books.",
+  "start_url": "/pos",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "any",
+  "background_color": "#0f1b2d",
+  "theme_color": "#0f1b2d",
+  "icons": [
+    { "src": "/pos-icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/pos-icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/pos-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

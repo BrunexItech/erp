@@ -1,0 +1,24 @@
+@import "@fontsource-variable/inter";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-50 text-navy-900 antialiased dark:bg-navy-900 dark:text-white;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Numbers line up in every table and total. */
+.tabular-nums,
+td {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  @apply bg-brand-100 text-navy-900;
+}
