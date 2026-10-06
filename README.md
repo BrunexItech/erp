@@ -54,6 +54,84 @@ docker compose exec backend python scripts/seed_demo.py
 Then sign in as **demo@mwangaza.co.ke / Demo1234!** — an owner on the
 Enterprise package who is also platform admin (so `/admin` works too).
 
+## Deploying to a server (e.g. erp.oqtekal.com behind Cloudflare)
+
+`docker-compose.prod.yml` is the production stack: built (not dev-mode) web
+app, the API with migrations applied on start, Postgres and Redis reachable
+only inside the stack, and one entry point on `127.0.0.1:8090`.
+
+**1. Cloudflare DNS.** Add an `A` record: name `erp`, value = the server's IP.
+Leave it **DNS only** (grey cloud) until step 4 works.
+
+**2. On the server** (Ubuntu/Debian, with Docker installed —
+`curl -fsSL https://get.docker.com | sh`):
+
+```bash
+git clone https://github.com/BrunexItech/erp.git /srv/erp && cd /srv/erp
+cp .env.production.example .env
+nano .env        # set DOMAIN and the three secrets; the file says how to generate each
+```
+
+**3. Start it.** Pick the line that matches the server:
+
+```bash
+# a) Nothing else is using ports 80/443 on this server — the bundled Caddy
+#    serves the site and gets the HTTPS certificate by itself:
+docker compose --profile caddy up -d --build
+
+# b) The server already runs nginx/Apache for other sites — start the app
+#    only, then point the existing web server at it (below):
+docker compose up -d --build
+```
+
+For (b), add a site to the existing nginx and get a certificate for it:
+
+```nginx
+server {
+    server_name erp.oqtekal.com;
+    client_max_body_size 12m;
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d erp.oqtekal.com
+```
+
+**4. Check and create your admin.** Open `https://erp.oqtekal.com`, sign up
+with your own email, then make that account the platform admin:
+
+```bash
+docker compose exec backend python -m app.cli make-admin you@oqtekal.com
+```
+
+(Optional sample shop: `docker compose exec backend python scripts/seed_demo.py`
+— don't run it on a server real customers use; its password is public.)
+
+**5. Turn Cloudflare on.** Switch the DNS record to **Proxied** (orange cloud)
+and set SSL/TLS mode to **Full (strict)**. Never "Flexible": that sends
+passwords unencrypted between Cloudflare and the server.
+
+**6. Keep it healthy.** `crontab -e` on the server:
+
+```bash
+30 2 * * * cd /srv/erp && ./backend/scripts/backup.sh >> /var/log/erp-backup.log 2>&1
+0 6 * * *  cd /srv/erp && docker compose exec -T backend python -m app.cli billing-cycle
+5 6 * * *  cd /srv/erp && docker compose exec -T backend python -m app.cli recurring-invoices
+```
+
+Point an uptime monitor at `https://erp.oqtekal.com/health`. Copy the
+`backups/` folder off the server regularly.
+
+**Updating later:** `cd /srv/erp && git pull && docker compose up -d --build`
+(add `--profile caddy` if you used it). Database changes apply automatically.
+
 ## Local development without Docker for the backend
 
 ```bash

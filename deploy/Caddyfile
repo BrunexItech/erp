@@ -1,0 +1,6 @@
+# Only used with `--profile caddy` (a server with nothing else on ports 80/443).
+# Gets and renews the HTTPS certificate by itself.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy web:80
+}
