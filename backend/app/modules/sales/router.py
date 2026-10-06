@@ -150,6 +150,15 @@ async def download_invoice_pdf(
     return _pdf(pdf_bytes, (invoice.invoice_no if invoice else "") or f"invoice-{invoice_id[:8]}")
 
 
+@router.post("/invoices/{invoice_id}/etims", response_model=InvoiceOut)
+async def resubmit_to_kra(
+    invoice_id: str,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    return await SalesService(session, actor.workspace_id).resubmit_etims(invoice_id)
+
+
 @router.post("/invoices/{invoice_id}/void", response_model=InvoiceOut)
 async def void_invoice(
     invoice_id: str,

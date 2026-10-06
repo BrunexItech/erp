@@ -281,6 +281,7 @@ class PurchasingService:
                 payment_id=entry.id,
                 vendor_bill_id=bill.id,
                 amount=float(amount),
+                method=method,
                 entry_date=payment_date,
             ),
             self.session,
@@ -359,3 +360,25 @@ class PurchasingService:
             .group_by(ApPaymentEntry.vendor_bill_id)
         )
         return {bill_id: Decimal(total) for bill_id, total in (await self.session.execute(stmt)).all()}
+
+    async def vat_input(self, start: date, end: date) -> dict:
+        """Input VAT for a return period: VAT on supplier bills dated in it."""
+        from app.modules.crm.models import Party
+
+        bills = await self.bills.list(
+            VendorBill.status != VendorBillStatus.void, VendorBill.bill_date >= start, VendorBill.bill_date <= end
+        )
+        parties = {p.id: p for p in await TenantRepository(self.session, self.workspace_id, Party).list()}
+        rows = [
+            {
+                "bill_no": b.bill_no, "date": b.bill_date, "vendor": parties[b.party_id].name if b.party_id in parties else "",
+                "vendor_pin": (parties[b.party_id].tax_id or "") if b.party_id in parties else "",
+                "vendor_reference": b.vendor_reference, "taxable": b.subtotal, "vat": b.tax_total,
+            }
+            for b in sorted(bills, key=lambda b: (b.bill_date, b.bill_no)) if b.tax_total
+        ]
+        return {
+            "bills": rows,
+            "purchases_taxable": sum((b.subtotal for b in bills), Decimal("0")),
+            "input_vat": sum((b.tax_total for b in bills), Decimal("0")),
+        }

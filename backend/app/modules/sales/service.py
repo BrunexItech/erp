@@ -481,6 +481,59 @@ class SalesService:
             self.session,
         )
 
+        await self._submit_etims(invoice, workspace)
+        await self.session.commit()
+        await self.session.refresh(invoice)
+        return invoice
+
+    async def _submit_etims(self, invoice: Invoice, workspace=None) -> None:
+        """Transmit to KRA if this business has eTIMS switched on. A failure
+        never blocks the sale: the invoice is saved as "failed" with the
+        reason, and can be resubmitted."""
+        from app.modules.sales import etims
+
+        workspace = workspace or await self._workspace()
+        gateway = etims.gateway_for(workspace.etims_mode)
+        if gateway is None:
+            return
+        party = await self._party(invoice.party_id)
+        lines = await self.invoice_lines.list(InvoiceLine.invoice_id == invoice.id)
+        invoice.etims_status = "pending"
+        try:
+            receipt = gateway.submit(
+                etims.EtimsInvoice(
+                    invoice_no=invoice.invoice_no,
+                    issued_on=(invoice.issue_date or date.today()).isoformat(),
+                    seller_pin=workspace.tax_pin,
+                    buyer_pin=party.tax_id or "",
+                    buyer_name=party.name,
+                    lines=[
+                        {"description": l.description, "qty": l.qty, "unit_price": l.unit_price, "tax_rate": l.tax_rate, "taxable": l.line_subtotal, "vat": l.tax_amount}
+                        for l in lines
+                    ],
+                    taxable=invoice.subtotal,
+                    vat=invoice.tax_total,
+                    total=invoice.total,
+                )
+            )
+        except etims.EtimsError as exc:
+            invoice.etims_status = "failed"
+            invoice.etims_error = str(exc)[:300]
+            return
+        invoice.etims_status = "submitted"
+        invoice.etims_reference = receipt.reference
+        invoice.etims_qr = receipt.qr_data
+        invoice.etims_error = ""
+
+    async def resubmit_etims(self, invoice_id: str) -> Invoice:
+        invoice = await self.invoices.get_for_update(invoice_id)
+        if invoice is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "invoice not found")
+        if invoice.etims_status == "submitted":
+            raise HTTPException(status.HTTP_409_CONFLICT, "already submitted to KRA")
+        if invoice.status == InvoiceStatus.void:
+            raise HTTPException(status.HTTP_409_CONFLICT, "invoice is void")
+        await self._submit_etims(invoice)
         await self.session.commit()
         await self.session.refresh(invoice)
         return invoice
@@ -562,6 +615,7 @@ class SalesService:
                 payment_id=entry.id,
                 invoice_id=invoice.id,
                 amount=float(amount),
+                method=method,
                 entry_date=payment_date,
             ),
             self.session,
@@ -975,10 +1029,12 @@ class SalesService:
                 payment_id=payment.id,
                 invoice_id=invoice.id,
                 amount=float(totals.total),
+                method=payload.payment_method,
             ),
             self.session,
         )
 
+        await self._submit_etims(invoice)
         await self.session.commit()
         await self.session.refresh(invoice)
         await self.session.refresh(payment)
@@ -1078,6 +1134,10 @@ class SalesService:
             payment_reference=invoice.invoice_no,
             stamp=stamp,
             show_payment_details=invoice.status != InvoiceStatus.void,
+            fiscal=(
+                {"reference": invoice.etims_reference, "qr": invoice.etims_qr, "is_test": invoice.etims_reference.startswith("TEST-")}
+                if invoice.etims_status == "submitted" else None
+            ),
         )
 
     async def sample_invoice_pdf(self, template: str | None, brand_color: str | None) -> bytes:
@@ -1414,6 +1474,44 @@ class SalesService:
             "opening_balance": opening,
             "closing_balance": running,
             "lines": lines,
+        }
+
+    async def vat_output(self, start: date, end: date) -> dict:
+        """Output VAT for a return period: taxable sales and VAT by rate from
+        invoice lines, less credit notes issued in the period."""
+        by_rate: dict[Decimal, dict] = defaultdict(lambda: {"taxable": ZERO, "vat": ZERO})
+        invoices = await self.invoices.list(
+            Invoice.status != InvoiceStatus.void, Invoice.issue_date >= start, Invoice.issue_date <= end
+        )
+        ids = [i.id for i in invoices]
+        itemised: dict[str, tuple[Decimal, Decimal]] = defaultdict(lambda: (ZERO, ZERO))
+        if ids:
+            for line in await self.invoice_lines.list(InvoiceLine.invoice_id.in_(ids)):
+                by_rate[line.tax_rate]["taxable"] += line.line_subtotal
+                by_rate[line.tax_rate]["vat"] += line.tax_amount
+                taxable, vat = itemised[line.invoice_id]
+                itemised[line.invoice_id] = (taxable + line.line_subtotal, vat + line.tax_amount)
+        # Invoices raised without lines still belong in the return.
+        for invoice in invoices:
+            taxable, vat = itemised[invoice.id]
+            if invoice.subtotal - taxable or invoice.tax_total - vat:
+                rest_taxable, rest_vat = invoice.subtotal - taxable, invoice.tax_total - vat
+                rate = (rest_vat / rest_taxable).quantize(Decimal("0.0001")) if rest_taxable else ZERO
+                by_rate[rate]["taxable"] += rest_taxable
+                by_rate[rate]["vat"] += rest_vat
+
+        credits = await self.credit_notes.list(CreditNote.issue_date >= start, CreditNote.issue_date <= end)
+        credit_taxable = sum((c.subtotal for c in credits), ZERO)
+        credit_vat = sum((c.tax_total for c in credits), ZERO)
+        rows = [{"rate": rate, "taxable": v["taxable"], "vat": v["vat"]} for rate, v in sorted(by_rate.items(), reverse=True)]
+        return {
+            "by_rate": rows,
+            "invoice_count": len(invoices),
+            "sales_taxable": sum((r["taxable"] for r in rows), ZERO),
+            "sales_vat": sum((r["vat"] for r in rows), ZERO),
+            "credit_notes_taxable": credit_taxable,
+            "credit_notes_vat": credit_vat,
+            "output_vat": sum((r["vat"] for r in rows), ZERO) - credit_vat,
         }
 
     async def sales_summary(self, start: date, end: date) -> dict:

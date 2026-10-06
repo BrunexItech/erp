@@ -23,8 +23,15 @@ from app.modules.accounting.models import (
     JournalLine,
 )
 
+YEAR_END_SOURCE = "year_end_close"
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
+
+# Where money lands for each payment method unless the workspace maps it
+# elsewhere (AccountingSettings.payment_accounts). Keeping cash, M-Pesa and
+# bank in separate ledger accounts is what makes each reconcilable against
+# its own statement.
+DEFAULT_PAYMENT_ACCOUNTS = {"cash": "CASH", "mpesa": "MPESA", "m-pesa": "MPESA", "bank": "BANK", "cheque": "BANK", "card": "BANK"}
 
 # Types whose natural balance is a debit; everything else is credit-natured.
 DEBIT_NATURED = {AccountType.asset, AccountType.expense}
@@ -119,6 +126,29 @@ class AccountingService:
             if not 1 <= fiscal_year_start_month <= 12:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "fiscal_year_start_month must be 1-12")
             settings.fiscal_year_start_month = fiscal_year_start_month
+        await self.session.commit()
+        await self.session.refresh(settings)
+        return settings
+
+    async def payment_account(self, method: str) -> str:
+        """The account key or id a payment by `method` posts to."""
+        method = (method or "cash").lower()
+        mapped = ((await self.get_settings()).payment_accounts or {}).get(method)
+        if mapped and await self.accounts.get(mapped) is not None:
+            return mapped
+        return DEFAULT_PAYMENT_ACCOUNTS.get(method, "CASH")
+
+    async def set_payment_accounts(self, mapping: dict[str, str]) -> AccountingSettings:
+        settings = await self.get_settings()
+        cleaned: dict[str, str] = {}
+        for method, account_id in mapping.items():
+            if not account_id:
+                continue
+            account = await self.accounts.get(account_id)
+            if account is None or account.type != AccountType.asset:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"'{method}' must map to an asset account (cash, bank or M-Pesa)")
+            cleaned[method.lower()] = account_id
+        settings.payment_accounts = cleaned
         await self.session.commit()
         await self.session.refresh(settings)
         return settings
@@ -265,7 +295,7 @@ class AccountingService:
     # --------------------------------------------------------------- balances
 
     async def _sums_by_account(
-        self, start: date | None = None, end: date | None = None
+        self, start: date | None = None, end: date | None = None, *, include_closing: bool = True
     ) -> dict[str, tuple[Decimal, Decimal]]:
         stmt = (
             select(
@@ -281,6 +311,9 @@ class AccountingService:
             stmt = stmt.where(JournalEntry.date >= start)
         if end is not None:
             stmt = stmt.where(JournalEntry.date <= end)
+        if not include_closing:
+            # ...and neither is the entry that undoes a close when a year is reopened.
+            stmt = stmt.where(JournalEntry.source_type.not_like(f"{YEAR_END_SOURCE}%"))
         rows = (await self.session.execute(stmt)).all()
         return {account_id: (Decimal(d), Decimal(c)) for account_id, d, c in rows}
 
@@ -328,7 +361,9 @@ class AccountingService:
         accounts = await self.accounts.list(
             Account.type.in_([AccountType.revenue, AccountType.expense])
         )
-        sums = await self._sums_by_account(start=start, end=end)
+        # A closed year still reports its real profit: the closing entry that
+        # swept it into retained earnings is not part of trading.
+        sums = await self._sums_by_account(start=start, end=end, include_closing=False)
 
         sections: dict[str, list[dict]] = defaultdict(list)
         for account in sorted(accounts, key=lambda a: a.code):
@@ -533,6 +568,87 @@ class AccountingService:
             }
             for e in entries
         ]
+
+    # --------------------------------------------------------------- year end
+
+    def fiscal_year_bounds(self, year: int, start_month: int) -> tuple[date, date]:
+        """Fiscal year `year` is the one that ENDS in calendar year `year`
+        (for a January start that is simply 1 Jan – 31 Dec)."""
+        import calendar
+
+        if start_month == 1:
+            return date(year, 1, 1), date(year, 12, 31)
+        end_month = start_month - 1
+        return date(year - 1, start_month, 1), date(year, end_month, calendar.monthrange(year, end_month)[1])
+
+    async def closed_years(self) -> list[int]:
+        entries = await self.entries.list(JournalEntry.source_type == YEAR_END_SOURCE, JournalEntry.reversed_by_id.is_(None))
+        return sorted(int(e.source_id) for e in entries)
+
+    async def close_year(self, year: int) -> dict:
+        """Year-end close: sweep the year's income and expenses into Retained
+        Earnings with one closing entry, and lock the books through year end
+        so the filed figures can't move. Reversible with reopen_year."""
+        settings = await self.get_settings()
+        start, end = self.fiscal_year_bounds(year, settings.fiscal_year_start_month)
+        if end >= date.today():
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"the {year} financial year hasn't ended yet ({end.isoformat()})")
+        if year in await self.closed_years():
+            raise HTTPException(status.HTTP_409_CONFLICT, f"{year} is already closed")
+
+        accounts = await self.accounts.list(Account.type.in_([AccountType.revenue, AccountType.expense]))
+        sums = await self._sums_by_account(end=end, include_closing=True)
+        lines: list[JournalLineInput] = []
+        profit = ZERO
+        for account in accounts:
+            debit, credit = sums.get(account.id, (ZERO, ZERO))
+            balance = debit - credit  # debit-positive
+            if balance == 0:
+                continue
+            # Reverse each account's balance so it starts the new year at zero.
+            lines.append(JournalLineInput(account.id, credit=balance) if balance > 0 else JournalLineInput(account.id, debit=-balance))
+            profit -= balance
+        if not lines:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"nothing to close: no income or expenses up to {end.isoformat()}")
+        lines.append(JournalLineInput("RETAINED_EARNINGS", credit=profit) if profit > 0 else JournalLineInput("RETAINED_EARNINGS", debit=-profit))
+
+        # The closing entry is dated inside the period being locked, so post
+        # it before moving the lock date.
+        previous_lock = settings.lock_date
+        settings.lock_date = None
+        await self.session.flush()
+        entry = await self.post_journal_entry(
+            entry_date=end, memo=f"Year-end close {year}", source_type=YEAR_END_SOURCE, source_id=str(year), lines=lines,
+        )
+        settings.lock_date = max(end, previous_lock) if previous_lock else end
+        await self.session.commit()
+        return {"year": year, "period_end": end, "profit": profit, "entry_no": entry.entry_no, "lock_date": settings.lock_date}
+
+    async def reopen_year(self, year: int) -> dict:
+        entries = await self.entries.list(
+            JournalEntry.source_type == YEAR_END_SOURCE, JournalEntry.source_id == str(year), JournalEntry.reversed_by_id.is_(None)
+        )
+        if not entries:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"{year} isn't closed")
+        if any(y > year for y in await self.closed_years()):
+            raise HTTPException(status.HTTP_409_CONFLICT, "reopen later years first")
+        settings = await self.get_settings()
+        _, end = self.fiscal_year_bounds(year, settings.fiscal_year_start_month)
+        settings.lock_date = None
+        await self.session.flush()
+        for entry in entries:
+            # Deleting would lose the audit trail; a reversing entry on the
+            # same date keeps it and nets the close to zero.
+            reversal = await self.reverse_entry(entry.id, end, f"Reopen {year}")
+            reversal.source_type = YEAR_END_SOURCE + "_reversal"
+        await self.session.flush()
+        # Fall back to the lock of the latest year that is still closed, if any.
+        remaining = [y for y in await self.closed_years() if y != year]
+        settings.lock_date = (
+            self.fiscal_year_bounds(max(remaining), settings.fiscal_year_start_month)[1] if remaining else None
+        )
+        await self.session.commit()
+        return {"year": year, "lock_date": settings.lock_date}
 
     # ---------------------------------------------------------------- budgets
 

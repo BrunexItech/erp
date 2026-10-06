@@ -91,6 +91,11 @@ class Invoice(TenantModel):
     channel: Mapped[str] = mapped_column(String(16), default="invoice", index=True)  # "invoice" | "pos"
     warehouse_id: Mapped[str | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)  # POS till location
     cashier_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # KRA eTIMS (see sales/etims.py). "" = not applicable (eTIMS off).
+    etims_status: Mapped[str] = mapped_column(String(16), default="")  # "" | pending | submitted | failed
+    etims_reference: Mapped[str] = mapped_column(String(64), default="")
+    etims_qr: Mapped[str] = mapped_column(String(500), default="")
+    etims_error: Mapped[str] = mapped_column(String(300), default="")
 
 
 class InvoiceLine(TenantModel):

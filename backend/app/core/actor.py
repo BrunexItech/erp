@@ -28,6 +28,7 @@ class Actor:
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> User:
@@ -46,10 +47,14 @@ async def get_current_user(
     # Tokens issued before the last password change are dead.
     if claims.get("tv", 0) != user.token_version:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session ended — sign in again")
+    # For the activity log (core/activity.py), written after the response.
+    request.state.user_email = user.email
+    request.state.impersonator = claims.get("imp")
     return user
 
 
 async def get_actor(
+    request: Request,
     x_workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -87,7 +92,7 @@ async def get_actor(
 
     access = await BillingService(session).access(workspace.id)
 
-    return Actor(
+    actor = Actor(
         user_id=user.id,
         workspace_id=workspace.id,
         role=membership.role.value if hasattr(membership.role, "value") else membership.role,
@@ -96,6 +101,8 @@ async def get_actor(
         billing_level=access.level,
         billing_message=access.message,
     )
+    request.state.actor = actor
+    return actor
 
 
 async def get_tenant_session(

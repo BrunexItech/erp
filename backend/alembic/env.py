@@ -9,6 +9,7 @@ from alembic import context
 
 from app.core.config import settings
 from app.core.db import Base
+from app.core import activity as activity_models  # noqa: F401
 from app.core import numbering as numbering_models  # noqa: F401
 
 # Import every module's models so they register on Base.metadata before

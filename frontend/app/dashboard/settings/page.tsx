@@ -6,6 +6,7 @@ import { Button, Card, ErrorBanner, Field, Input, PageHeader, Select, Tabs, Text
 import { SecurityTab } from "@/components/settings/SecurityTab";
 import { TeamTab } from "@/components/settings/TeamTab";
 import { errorMessage } from "@/lib/api/query";
+import { ActivityTab } from "@/components/accounting/TaxAndYearEnd";
 import { BillingPanel } from "@/components/billing/BillingPanel";
 import { DesignPicker } from "@/components/branding/DesignPicker";
 import { LogoUploader } from "@/components/branding/LogoUploader";
@@ -13,7 +14,7 @@ import type { Branding } from "@/lib/api/types";
 
 type Form = Omit<Branding, "logo_url"> & { logo_url: string };
 
-type Tab = "company" | "team" | "billing" | "security";
+type Tab = "company" | "team" | "billing" | "activity" | "security";
 
 export default function SettingsPage() {
   const { data: me } = useMe();
@@ -22,7 +23,7 @@ export default function SettingsPage() {
   // Deep link from the "Pay now" banner: /dashboard/settings?tab=billing
   useEffect(() => {
     const wanted = new URLSearchParams(window.location.search).get("tab");
-    if (wanted === "billing" || wanted === "team" || wanted === "security") setTab(wanted);
+    if (wanted === "billing" || wanted === "team" || wanted === "security" || wanted === "activity") setTab(wanted);
   }, []);
   const active: Tab = tab ?? (isAdmin ? "company" : "security");
   return (
@@ -34,13 +35,14 @@ export default function SettingsPage() {
         tabs={[
           ...(isAdmin ? [{ key: "company" as Tab, label: "Company & documents" }] : []),
           { key: "team" as Tab, label: "Team" },
-          ...(isAdmin ? [{ key: "billing" as Tab, label: "Plan & billing" }] : []),
+          ...(isAdmin ? [{ key: "billing" as Tab, label: "Plan & billing" }, { key: "activity" as Tab, label: "Activity log" }] : []),
           { key: "security" as Tab, label: "Security" },
         ]}
       />
       {active === "company" && <CompanyTab />}
       {active === "team" && <TeamTab />}
       {active === "billing" && <BillingPanel />}
+      {active === "activity" && <ActivityTab />}
       {active === "security" && <SecurityTab />}
     </div>
   );
@@ -149,6 +151,13 @@ function CompanyTab() {
           </Field>
           <Field label="Default invoice terms & conditions">
             <Textarea {...bind("invoice_terms")} />
+          </Field>
+          <Field label="KRA eTIMS" hint="Live submission needs your KRA eTIMS device credentials to be connected first. Test mode prints a clearly-marked test code so you can see the workflow.">
+            <Select {...bind("etims_mode")}>
+              <option value="off">Off — invoices are not sent to KRA</option>
+              <option value="test">Test mode (not fiscal)</option>
+              <option value="live">Live</option>
+            </Select>
           </Field>
           <Field label="Document footer note"><Input placeholder="e.g. Thank you for your business!" {...bind("invoice_footer_note")} /></Field>
         </Card>

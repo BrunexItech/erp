@@ -1,10 +1,16 @@
-from datetime import date
+from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.actor import Actor, get_actor, get_tenant_session, require_permission
+from app.core import csvio
+from app.modules.accounting.banking import BankingService
+from app.modules.accounting.models import StatementLineStatus
 from app.modules.accounting.schemas import (
+    MatchRequest,
+    PaymentAccountsUpdate,
+    StatementEntryRequest,
     AccountCreate,
     AccountingSettingsOut,
     AccountingSettingsUpdate,
@@ -201,3 +207,162 @@ async def update_settings(
     return await AccountingService(session, actor.workspace_id).update_settings(
         lock_date=payload.lock_date, fiscal_year_start_month=payload.fiscal_year_start_month
     )
+
+
+@router.put("/settings/payment-accounts", response_model=AccountingSettingsOut)
+async def set_payment_accounts(
+    payload: PaymentAccountsUpdate,
+    actor: Actor = Depends(write),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    return await AccountingService(session, actor.workspace_id).set_payment_accounts(payload.payment_accounts)
+
+
+# ---------------------------------------------------------------- year end
+
+
+@router.get("/year-end")
+async def year_end_status(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    service = AccountingService(session, actor.workspace_id)
+    settings = await service.get_settings()
+    closed = await service.closed_years()
+    await session.commit()
+    return {"closed_years": closed, "lock_date": settings.lock_date, "fiscal_year_start_month": settings.fiscal_year_start_month}
+
+
+@router.post("/year-end/{year}/close")
+async def close_year(year: int, actor: Actor = Depends(require_permission("*")), session: AsyncSession = Depends(get_tenant_session)):
+    return await AccountingService(session, actor.workspace_id).close_year(year)
+
+
+@router.post("/year-end/{year}/reopen")
+async def reopen_year(year: int, actor: Actor = Depends(require_permission("*")), session: AsyncSession = Depends(get_tenant_session)):
+    return await AccountingService(session, actor.workspace_id).reopen_year(year)
+
+
+# --------------------------------------------------------------------- VAT
+
+
+async def _vat(actor: Actor, session: AsyncSession, start: date, end: date) -> dict:
+    """Output VAT from Sales less input VAT from Purchasing, each through its
+    own module's service (and only if the workspace has that module)."""
+    report: dict = {"start": start, "end": end, "sales": None, "purchases": None}
+    output = input_vat = 0
+    if "sales" in actor.features:
+        from app.modules.sales.service import SalesService
+
+        report["sales"] = await SalesService(session, actor.workspace_id).vat_output(start, end)
+        output = report["sales"]["output_vat"]
+    if "purchasing" in actor.features:
+        from app.modules.purchasing.service import PurchasingService
+
+        report["purchases"] = await PurchasingService(session, actor.workspace_id).vat_input(start, end)
+        input_vat = report["purchases"]["input_vat"]
+    report.update(output_vat=output, input_vat=input_vat, net_vat=output - input_vat)
+    return report
+
+
+def _month_bounds(start: date | None, end: date | None) -> tuple[date, date]:
+    """Defaults to last month — the return that's due now (by the 20th)."""
+    if start and end:
+        return start, end
+    first_this_month = date.today().replace(day=1)
+    last_month_end = first_this_month - timedelta(days=1)
+    return last_month_end.replace(day=1), last_month_end
+
+
+@router.get("/reports/vat")
+async def vat_return(
+    start: date | None = None,
+    end: date | None = None,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    return await _vat(actor, session, *_month_bounds(start, end))
+
+
+@router.get("/reports/vat/csv")
+async def vat_return_csv(
+    start: date | None = None,
+    end: date | None = None,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    start, end = _month_bounds(start, end)
+    report = await _vat(actor, session, start, end)
+    rows: list[list] = [["SALES (output VAT)", "", "", ""]]
+    for r in (report["sales"] or {}).get("by_rate", []):
+        rows.append([f"Sales at {r['rate'] * 100:.0f}%", "", r["taxable"], r["vat"]])
+    if report["sales"]:
+        rows.append(["Less credit notes", "", -report["sales"]["credit_notes_taxable"], -report["sales"]["credit_notes_vat"]])
+    rows.append(["Output VAT", "", "", report["output_vat"]])
+    rows.append(["", "", "", ""])
+    rows.append(["PURCHASES (input VAT)", "Supplier PIN", "", ""])
+    for b in (report["purchases"] or {}).get("bills", []):
+        rows.append([f"{b['bill_no']} {b['vendor']} {b['vendor_reference']}".strip(), b["vendor_pin"], b["taxable"], b["vat"]])
+    rows.append(["Input VAT", "", "", report["input_vat"]])
+    rows.append(["", "", "", ""])
+    rows.append(["NET VAT PAYABLE" if report["net_vat"] >= 0 else "VAT CREDIT CARRIED FORWARD", "", "", abs(report["net_vat"])])
+    return csvio.csv_response(f"vat-return-{start.isoformat()}-{end.isoformat()}.csv", ["Item", "PIN", "Taxable amount", "VAT"], rows)
+
+
+# ----------------------------------------------------- bank reconciliation
+
+
+@router.get("/bank/accounts")
+async def bank_accounts(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    return await BankingService(session, actor.workspace_id).accounts()
+
+
+@router.get("/bank/{account_id}")
+async def bank_workspace(account_id: str, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    return await BankingService(session, actor.workspace_id).workspace(account_id)
+
+
+@router.post("/bank/{account_id}/import")
+async def import_statement(
+    account_id: str, file: UploadFile, actor: Actor = Depends(write), session: AsyncSession = Depends(get_tenant_session)
+):
+    return await BankingService(session, actor.workspace_id).import_statement(account_id, file)
+
+
+@router.get("/bank-statement-template")
+async def statement_template(actor: Actor = Depends(get_actor)):
+    return csvio.csv_response(
+        "statement-template.csv",
+        ["date", "description", "reference", "amount"],
+        [["2026-03-01", "Deposit - Acme Builders", "FT26060ABC", "54218.40"], ["2026-03-02", "Bank charges", "", "-350.00"]],
+    )
+
+
+@router.post("/bank/{account_id}/auto-match")
+async def auto_match(account_id: str, actor: Actor = Depends(write), session: AsyncSession = Depends(get_tenant_session)):
+    return {"matched": await BankingService(session, actor.workspace_id).auto_match(account_id)}
+
+
+@router.post("/bank/lines/{line_id}/match")
+async def match_line(
+    line_id: str, payload: MatchRequest, actor: Actor = Depends(write), session: AsyncSession = Depends(get_tenant_session)
+):
+    await BankingService(session, actor.workspace_id).match(line_id, payload.journal_line_id)
+    return {"ok": True}
+
+
+@router.post("/bank/lines/{line_id}/unmatch")
+async def unmatch_line(line_id: str, actor: Actor = Depends(write), session: AsyncSession = Depends(get_tenant_session)):
+    await BankingService(session, actor.workspace_id).set_status(line_id, StatementLineStatus.unmatched)
+    return {"ok": True}
+
+
+@router.post("/bank/lines/{line_id}/ignore")
+async def ignore_line(line_id: str, actor: Actor = Depends(write), session: AsyncSession = Depends(get_tenant_session)):
+    await BankingService(session, actor.workspace_id).set_status(line_id, StatementLineStatus.ignored)
+    return {"ok": True}
+
+
+@router.post("/bank/lines/{line_id}/create-entry")
+async def create_entry_from_line(
+    line_id: str, payload: StatementEntryRequest, actor: Actor = Depends(write), session: AsyncSession = Depends(get_tenant_session)
+):
+    await BankingService(session, actor.workspace_id).create_entry(line_id, payload.account_id, payload.memo)
+    return {"ok": True}

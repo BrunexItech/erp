@@ -119,7 +119,7 @@ async def _on_payment_received(event: events.PaymentReceived, session: AsyncSess
         source_type="payment_received",
         source_id=event.payment_id,
         lines=[
-            JournalLineInput("CASH", debit=amount),
+            JournalLineInput(await svc.payment_account(event.method), debit=amount),
             JournalLineInput("AR", credit=amount),
         ],
     )
@@ -135,7 +135,7 @@ async def _on_payment_made(event: events.PaymentMade, session: AsyncSession) -> 
         source_id=event.payment_id,
         lines=[
             JournalLineInput("AP", debit=amount),
-            JournalLineInput("CASH", credit=amount),
+            JournalLineInput(await svc.payment_account(event.method), credit=amount),
         ],
     )
 

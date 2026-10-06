@@ -96,6 +96,7 @@ def render_document(
     payment_reference: str = "",
     stamp: str | None = None,
     show_payment_details: bool = True,
+    fiscal: dict | None = None,
 ) -> bytes:
     brand = brand_color(workspace)
     st = PdfStyles(brand)
@@ -219,6 +220,26 @@ def render_document(
     if show_payment_details:
         left_block += payment_details(workspace, st, payment_reference)
     story.append(KeepTogether(two_col(left_block, totals_table, split=0.57)))
+
+    # ---- KRA eTIMS: control number + verification QR
+    if fiscal:
+        from app.core.pdf import qr_flowable
+
+        label = "KRA eTIMS — TEST MODE, NOT A FISCAL RECEIPT" if fiscal.get("is_test") else "KRA eTIMS"
+        block = Table(
+            [[
+                qr_flowable(fiscal["qr"], 24 * mm),
+                [
+                    para(label, st.label),
+                    Spacer(1, 1.2 * mm),
+                    Paragraph(f"Control unit invoice no.: <b>{escape(fiscal['reference'])}</b>", st.body),
+                    para("Scan the code to verify this invoice with KRA.", st.small),
+                ],
+            ]],
+            colWidths=[28 * mm, CONTENT_W - 28 * mm],
+        )
+        block.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+        story += [Spacer(1, 5 * mm), HRFlowable(width="100%", thickness=0.5, color=RULE), Spacer(1, 3 * mm), KeepTogether(block)]
 
     # ---- notes / terms
     for label, text in (("NOTES", notes), ("TERMS & CONDITIONS", terms)):

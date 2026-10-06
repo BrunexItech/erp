@@ -42,6 +42,7 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
 
   const pay = useApiMutation("post", "/sales/invoices/payments", REFRESH);
   const credit = useApiMutation("post", "/sales/credit-notes", REFRESH);
+  const resubmit = useApiMutation<undefined>("post", () => `/sales/invoices/${invoiceId}/etims`, REFRESH);
   const voidInvoice = useApiMutation<{ reason: string }>("post", () => `/sales/invoices/${invoiceId}/void`, REFRESH);
 
   const [panel, setPanel] = useState<"none" | "pay" | "credit" | "void">("none");
@@ -90,7 +91,15 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
               <div className="mt-2 flex gap-2">
                 <Badge tone={INVOICE_TONE[invoice.status] ?? "neutral"}>{humanize(invoice.status)}</Badge>
                 {isOverdue(invoice) && <Badge tone="danger">Overdue</Badge>}
+                {invoice.etims_status === "submitted" && <Badge tone="info">KRA {invoice.etims_reference}</Badge>}
+                {invoice.etims_status === "failed" && <Badge tone="warning">Not yet sent to KRA</Badge>}
               </div>
+              {invoice.etims_status === "failed" && (
+                <p className="mt-2 max-w-md text-xs text-amber-700">
+                  {invoice.etims_error}{" "}
+                  <button className="font-medium underline" onClick={() => run(() => resubmit.mutateAsync(undefined))}>Try again</button>
+                </p>
+              )}
             </div>
             <div className="text-right">
               <p className="text-xs uppercase tracking-wide text-slate-500">Balance due</p>

@@ -18,7 +18,9 @@ import {
   Td,
   Th,
 } from "@/components/om/primitives";
-import { useBranding } from "@/lib/api/hooks";
+import { BankingTab } from "@/components/accounting/BankingTab";
+import { VatTab, YearEndTab } from "@/components/accounting/TaxAndYearEnd";
+import { useBranding, useMe } from "@/lib/api/hooks";
 import { errorMessage, useApi, useApiMutation } from "@/lib/api/query";
 import { fmtDate, fmtMoney, humanize, MONTHS, num, today, yearStart } from "@/lib/format";
 import type {
@@ -31,7 +33,7 @@ import type {
   TrialBalanceRow,
 } from "@/lib/api/types";
 
-type Tab = "pnl" | "bs" | "tb" | "gl" | "journals" | "coa" | "budgets" | "settings";
+type Tab = "pnl" | "bs" | "tb" | "gl" | "journals" | "bank" | "vat" | "coa" | "budgets" | "settings";
 
 const TYPE_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
   asset: "success",
@@ -44,6 +46,9 @@ const TYPE_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = 
 export default function AccountingPage() {
   const [tab, setTab] = useState<Tab>("pnl");
   const { data: branding } = useBranding();
+  const { data: me } = useMe();
+  const isAdmin = !!me?.permissions.includes("*");
+  const canWrite = isAdmin || !!me?.permissions.includes("accounting.write");
   const currency = branding?.currency;
   return (
     <div className="space-y-6">
@@ -60,9 +65,11 @@ export default function AccountingPage() {
           { key: "tb", label: "Trial Balance" },
           { key: "gl", label: "General Ledger" },
           { key: "journals", label: "Journal Entries" },
+          { key: "bank", label: "Banking" },
+          { key: "vat", label: "VAT Return" },
           { key: "coa", label: "Chart of Accounts" },
           { key: "budgets", label: "Budgets" },
-          { key: "settings", label: "Period Lock" },
+          { key: "settings", label: "Year-end & Settings" },
         ]}
       />
       {tab === "pnl" && <PnlTab currency={currency} />}
@@ -72,7 +79,9 @@ export default function AccountingPage() {
       {tab === "journals" && <JournalsTab />}
       {tab === "coa" && <ChartTab />}
       {tab === "budgets" && <BudgetsTab />}
-      {tab === "settings" && <SettingsTab />}
+      {tab === "bank" && <BankingTab canWrite={canWrite} />}
+      {tab === "vat" && <VatTab currency={currency} />}
+      {tab === "settings" && <YearEndTab isAdmin={isAdmin} />}
     </div>
   );
 }
@@ -622,42 +631,5 @@ function BudgetsTab() {
       </Card>
       <p className="text-xs text-slate-400">Each month shows actual / budget. Year column shows actual and variance (actual − budget).</p>
     </div>
-  );
-}
-
-function SettingsTab() {
-  const { data } = useApi<{ lock_date: string | null; fiscal_year_start_month: number }>("/accounting/settings");
-  const save = useApiMutation("put", "/accounting/settings", [["accounting"]]);
-  const [lockDate, setLockDate] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const value = lockDate ?? data?.lock_date ?? "";
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setSaved(false);
-    try {
-      await save.mutateAsync({ lock_date: value || null, fiscal_year_start_month: data?.fiscal_year_start_month });
-      setSaved(true);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
-
-  return (
-    <Card className="max-w-xl p-6">
-      <form onSubmit={submit} className="space-y-4">
-        <p className="text-sm text-slate-600 dark:text-slate-300">
-          Close the books after filing VAT or finishing a year-end: no entry — manual or automatic — can be posted on or before the lock date.
-        </p>
-        <Field label="Books locked through" hint="Leave empty to keep every period open">
-          <Input type="date" value={value} onChange={(e) => setLockDate(e.target.value)} />
-        </Field>
-        <ErrorBanner message={error} />
-        {saved && <p className="text-sm text-emerald-600">Saved.</p>}
-        <Button type="submit" disabled={save.isPending}>Save</Button>
-      </form>
-    </Card>
   );
 }

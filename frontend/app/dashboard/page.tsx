@@ -25,6 +25,8 @@ export default function DashboardPage() {
     hasAccounting ? `/accounting/reports/profit-and-loss?start=${monthStart()}&end=${today()}` : null
   );
   const { data: trend } = useApi<TrendPoint[]>(hasAccounting ? "/accounting/reports/monthly-trend?months=12" : null);
+  const { data: bankAccounts } = useApi<{ id: string; book_balance: string }[]>(hasAccounting ? "/accounting/bank/accounts" : null);
+  const cashTotal = (bankAccounts ?? []).reduce((sum, a) => sum + num(a.book_balance), 0);
   const { data: aging } = useApi<AgingReport>(hasSales ? "/sales/reports/ar-aging" : null);
 
   const balance = (code: string, natural: "debit" | "credit") => {
@@ -47,7 +49,7 @@ export default function DashboardPage() {
       {hasAccounting ? (
         <>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <StatTile label="Cash & bank" icon={<Landmark />} value={fmtMoney(balance("1000", "debit"))} sub={currency} />
+            <StatTile label="Cash & bank" icon={<Landmark />} value={fmtMoney(cashTotal)} sub={`${currency ?? ""} · cash, M-Pesa and bank`.trim()} />
             <StatTile label="Receivables" icon={<HandCoins />} tone="emerald" value={fmtMoney(balance("1100", "debit"))} sub={aging ? `${fmtMoney(num(aging.totals.total) - num(aging.totals.current))} overdue` : undefined} />
             <StatTile label="Payables" icon={<ScrollText />} tone="rose" value={fmtMoney(balance("2100", "credit"))} />
             <StatTile label="Inventory value" icon={<Boxes />} tone="violet" value={fmtMoney(balance("1200", "debit"))} />

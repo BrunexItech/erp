@@ -58,6 +58,7 @@ class Workspace(Base):
     website: Mapped[str] = mapped_column(String(200), default="")
     brand_color: Mapped[str] = mapped_column(String(7), default="#1a7a8c")
     invoice_template: Mapped[str] = mapped_column(String(16), default="modern")  # modern | bold | classic
+    etims_mode: Mapped[str] = mapped_column(String(8), default="off")  # off | test | live (sales/etims.py)
     # Payment instructions printed on invoices/statements.
     bank_details: Mapped[str] = mapped_column(String(1000), default="")
     mpesa_paybill: Mapped[str] = mapped_column(String(20), default="")

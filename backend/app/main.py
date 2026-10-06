@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core import activity
 from app.core.actor import module_access, require_feature
 from app.modules.accounting.posting import register_subscribers
 from app.modules.admin.router import router as admin_router
@@ -91,7 +92,9 @@ async def log_unhandled_errors(request, call_next):
     from fastapi.responses import JSONResponse
 
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        await activity.record(request, response)
+        return response
     except Exception:
         error_id = uuid.uuid4().hex[:8]
         logging.getLogger("erp").exception("unhandled error %s on %s %s", error_id, request.method, request.url.path)

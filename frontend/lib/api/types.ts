@@ -17,6 +17,7 @@ export interface Branding {
   website: string;
   brand_color: string;
   invoice_template: "modern" | "bold" | "classic";
+  etims_mode: "off" | "test" | "live";
   bank_details: string;
   mpesa_paybill: string;
   mpesa_till: string;
@@ -145,6 +146,10 @@ export interface Invoice {
   total: string;
   amount_paid: string;
   amount_credited: string;
+  channel?: string;
+  etims_status?: string;
+  etims_reference?: string;
+  etims_error?: string;
 }
 
 export interface DocumentLine {

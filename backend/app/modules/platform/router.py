@@ -264,3 +264,25 @@ async def totp_enable(payload: TotpCode, user: User = Depends(get_current_user),
 async def totp_disable(payload: PasswordConfirm, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     await AccountService(session).totp_disable(user, payload.password)
     return {"ok": True}
+
+
+@router.get("/workspaces/activity")
+async def activity_log(
+    area: str | None = None,
+    limit: int = 200,
+    actor: Actor = Depends(require_permission("*")),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    """Who changed what in this workspace — owners and admins only."""
+    from sqlalchemy import select
+
+    from app.core.activity import ActivityLog
+
+    stmt = select(ActivityLog).where(ActivityLog.workspace_id == actor.workspace_id).order_by(ActivityLog.created_at.desc())
+    if area:
+        stmt = stmt.where(ActivityLog.area == area)
+    rows = (await session.execute(stmt.limit(min(limit, 500)))).scalars()
+    return [
+        {"id": r.id, "at": r.created_at, "user": r.user_email, "action": r.action, "area": r.area, "via_support": r.via_support}
+        for r in rows
+    ]

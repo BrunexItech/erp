@@ -4,7 +4,7 @@ import enum
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import TenantModel
@@ -76,6 +76,10 @@ class AccountingSettings(TenantModel):
 
     lock_date: Mapped[date | None] = mapped_column(nullable=True)
     fiscal_year_start_month: Mapped[int] = mapped_column(default=1)
+    # Which ledger account money lands in per payment method, e.g.
+    # {"mpesa": "<account id>", "bank": "<account id>"}. Unmapped methods use
+    # the defaults in service.DEFAULT_PAYMENT_ACCOUNTS.
+    payment_accounts: Mapped[dict] = mapped_column(JSON, default=dict)
 
     __table_args__ = (UniqueConstraint("workspace_id", name="uq_accounting_settings_ws"),)
 
@@ -100,7 +104,9 @@ class BudgetLine(TenantModel):
 # referenced by key from posting.py so auto-postings always have a target without
 # requiring the SME to configure a chart of accounts before their first sale.
 SYSTEM_ACCOUNTS: dict[str, tuple[str, str, AccountType]] = {
-    "CASH": ("1000", "Cash & Bank", AccountType.asset),
+    "CASH": ("1000", "Cash on Hand", AccountType.asset),
+    "MPESA": ("1010", "M-Pesa", AccountType.asset),
+    "BANK": ("1020", "Bank Account", AccountType.asset),
     "AR": ("1100", "Accounts Receivable", AccountType.asset),
     "INVENTORY": ("1200", "Inventory", AccountType.asset),
     "INPUT_VAT": ("1300", "Input VAT Recoverable", AccountType.asset),
@@ -134,6 +140,8 @@ SYSTEM_ACCOUNTS: dict[str, tuple[str, str, AccountType]] = {
 # Reporting group for each system account (see Account.subtype).
 SYSTEM_ACCOUNT_SUBTYPES: dict[str, str] = {
     "CASH": "bank",
+    "MPESA": "bank",
+    "BANK": "bank",
     "AR": "current_asset",
     "INVENTORY": "current_asset",
     "INPUT_VAT": "current_asset",
@@ -163,3 +171,26 @@ SYSTEM_ACCOUNT_SUBTYPES: dict[str, str] = {
     "EMPLOYER_STATUTORY_EXPENSE": "operating_expense",
     "DEPRECIATION_EXPENSE": "operating_expense",
 }
+
+
+class StatementLineStatus(str, enum.Enum):
+    unmatched = "unmatched"
+    matched = "matched"
+    ignored = "ignored"
+
+
+class BankStatementLine(TenantModel):
+    """One line of an imported bank or M-Pesa statement. Reconciling means
+    pairing each with the ledger line it corresponds to, so the books can be
+    proven against what the bank says actually happened."""
+
+    __tablename__ = "bank_statement_lines"
+
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), index=True)
+    batch_id: Mapped[str] = mapped_column(String(36), index=True)
+    date: Mapped[date]
+    description: Mapped[str] = mapped_column(String(500), default="")
+    reference: Mapped[str] = mapped_column(String(64), default="")
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))  # + money in, - money out
+    status: Mapped[StatementLineStatus] = mapped_column(default=StatementLineStatus.unmatched)
+    matched_line_id: Mapped[str | None] = mapped_column(ForeignKey("journal_lines.id"), nullable=True, unique=True)

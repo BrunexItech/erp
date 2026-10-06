@@ -120,6 +120,10 @@ class InvoiceOut(BaseModel):
     total: Decimal
     amount_paid: Decimal
     amount_credited: Decimal
+    channel: str = "invoice"
+    etims_status: str = ""
+    etims_reference: str = ""
+    etims_error: str = ""
 
     class Config:
         from_attributes = True

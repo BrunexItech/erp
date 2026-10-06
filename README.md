@@ -207,3 +207,23 @@ the script. Copy the backups off the server.
 
 **Monitoring** — point your uptime monitor at `/health/ready` (checks the
 database). Unhandled errors are logged with a short reference the user sees.
+
+## Finance: reconciliation, VAT, year end
+
+- **Separate ledgers per payment method.** Cash (1000), M-Pesa (1010) and
+  Bank (1020) are separate accounts; each payment posts to the one for its
+  method. Point a method at a different account (a second bank, say) under
+  Accounting → Year-end & Settings.
+- **Reconciliation** (Accounting → Banking): import the CSV statement from your
+  bank or the M-Pesa portal. Lines that clearly match your books are matched
+  automatically; match the rest by hand, or "Record" things that were never
+  entered (bank charges, interest, an unrecorded deposit).
+- **VAT return** (Accounting → VAT Return): output VAT by rate less credit
+  notes, input VAT per supplier bill with PINs, and the net payable; CSV export.
+- **Year-end close**: moves the year's profit to Retained Earnings and locks the
+  year; reversible.
+- **Activity log** (Settings → Activity log): every change, who made it and when.
+- **KRA eTIMS**: the workflow is built (status on each invoice, the KRA number
+  and QR code on the PDF, retry), with a clearly marked test mode. Live
+  submission is not connected — it needs the business's eTIMS device
+  credentials; see `backend/app/modules/sales/etims.py`.

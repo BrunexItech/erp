@@ -98,6 +98,7 @@ class PaymentReceived:
     payment_id: str
     invoice_id: str
     amount: float
+    method: str = ""  # cash | mpesa | bank | cheque | card — picks the ledger account
     entry_date: date | None = None  # GL posting date; None = today
 
 
@@ -107,6 +108,7 @@ class PaymentMade:
     payment_id: str
     vendor_bill_id: str
     amount: float
+    method: str = ""  # cash | mpesa | bank | cheque | card — picks the ledger account
     entry_date: date | None = None  # GL posting date; None = today
 
 
@@ -217,3 +219,9 @@ class ProductionCompleted:
     work_order_id: str
     conversion_cost: float
     entry_date: date
+
+
+@dataclass(frozen=True)
+class YearClosed:
+    workspace_id: str
+    year: int

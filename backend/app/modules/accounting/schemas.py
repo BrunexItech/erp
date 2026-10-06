@@ -77,6 +77,7 @@ class TrialBalanceRow(BaseModel):
 class AccountingSettingsOut(BaseModel):
     lock_date: date | None
     fiscal_year_start_month: int
+    payment_accounts: dict[str, str] = {}
 
     class Config:
         from_attributes = True
@@ -85,6 +86,22 @@ class AccountingSettingsOut(BaseModel):
 class AccountingSettingsUpdate(BaseModel):
     lock_date: date | None = None
     fiscal_year_start_month: int | None = None
+
+
+class PaymentAccountsUpdate(BaseModel):
+    """{"mpesa": "<account id>", "bank": "<account id>", ...}; an empty value
+    returns that method to its default account."""
+
+    payment_accounts: dict[str, str]
+
+
+class MatchRequest(BaseModel):
+    journal_line_id: str
+
+
+class StatementEntryRequest(BaseModel):
+    account_id: str  # the other side: bank charges, interest income, a customer's AR…
+    memo: str = ""
 
 
 class BudgetSet(BaseModel):

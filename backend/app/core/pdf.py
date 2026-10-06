@@ -532,3 +532,15 @@ def build_pdf(buffer: BytesIO, story: list, workspace, brand, stamp: str | None,
     return buffer.getvalue()
 
 
+
+
+def qr_flowable(data: str, size: float):
+    """A QR code as a platypus flowable (used for the KRA eTIMS verification link)."""
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    widget = QrCodeWidget(data, barLevel="M")
+    x0, y0, x1, y1 = widget.getBounds()
+    drawing = Drawing(size, size, transform=[size / (x1 - x0), 0, 0, size / (y1 - y0), 0, 0])
+    drawing.add(widget)
+    return drawing
