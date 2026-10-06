@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.actor import Actor, get_actor, get_tenant_session, require_feature
@@ -91,6 +91,17 @@ async def create_delivery(
         "order_id": delivery.order_id,
         "total_cogs": str(delivery.total_cogs),
     }
+
+
+@router.get("/documents/preview")
+async def preview_document_design(
+    template: str | None = Query(None, pattern="^(modern|bold|classic)$"),
+    brand_color: str | None = Query(None, pattern="^#[0-9a-fA-F]{6}$"),
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    pdf_bytes = await SalesService(session, actor.workspace_id).sample_invoice_pdf(template, brand_color)
+    return _pdf(pdf_bytes, "invoice-preview")
 
 
 # ---------------------------------------------------------------- invoices

@@ -34,7 +34,7 @@ export default function SignupPage() {
       if (workspaces.length > 0) {
         session.setWorkspaceId(workspaces[0].id);
       }
-      router.push("/dashboard");
+      router.push("/onboarding");
     } catch (err) {
       setError(err instanceof ApiError ? String(err.detail) : "Sign up failed");
     } finally {

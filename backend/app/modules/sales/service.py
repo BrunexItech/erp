@@ -1080,6 +1080,49 @@ class SalesService:
             show_payment_details=invoice.status != InvoiceStatus.void,
         )
 
+    async def sample_invoice_pdf(self, template: str | None, brand_color: str | None) -> bytes:
+        """A made-up invoice on the workspace's real letterhead — lets an owner
+        compare designs and colours before saving them. Nothing is stored."""
+        from types import SimpleNamespace
+
+        from app.modules.sales import documents
+
+        workspace = await self._workspace()
+        preview = SimpleNamespace(**{c.name: getattr(workspace, c.name) for c in workspace.__table__.columns})
+        if template:
+            preview.invoice_template = template
+        if brand_color:
+            preview.brand_color = brand_color
+        customer = SimpleNamespace(
+            name="Sample Customer Ltd", billing_address="Moi Avenue, Nairobi", shipping_address="",
+            phone="+254 722 000 111", email="accounts@customer.co.ke", tax_id="P051234567X",
+        )
+        lines = [
+            documents.DocLine("Product or service name", Decimal("12"), Decimal("1850"), ZERO, Decimal("0.16"), Decimal("22200")),
+            documents.DocLine("Another item, with a 5% discount", Decimal("3"), Decimal("4200"), Decimal("5"), Decimal("0.16"), Decimal("11970")),
+            documents.DocLine("Delivery", Decimal("1"), Decimal("1500"), ZERO, Decimal("0.16"), Decimal("1500")),
+        ]
+        today = date.today()
+        return documents.render_document(
+            workspace=preview,
+            party=customer,
+            title="TAX INVOICE",
+            meta=[
+                ("Invoice No.", "INV-000123"),
+                ("Invoice Date", documents.fmt_date(today)),
+                ("Due Date", documents.fmt_date(today + timedelta(days=workspace.default_payment_terms_days))),
+                ("Reference", "LPO-4471"),
+            ],
+            lines=lines,
+            totals=documents.Totals(
+                subtotal=Decimal("36300"), discount=Decimal("630"), tax=Decimal("5707.20"),
+                total=Decimal("41377.20"), paid=Decimal("15000"), balance=Decimal("26377.20"),
+            ),
+            notes="This is a preview with sample figures.",
+            terms=workspace.invoice_terms,
+            payment_reference="INV-000123",
+        )
+
     async def quote_pdf(self, quote_id: str) -> bytes:
         from app.modules.sales import documents
 

@@ -16,6 +16,7 @@ export interface Branding {
   tax_pin: string;
   website: string;
   brand_color: string;
+  invoice_template: "modern" | "bold" | "classic";
   bank_details: string;
   mpesa_paybill: string;
   mpesa_till: string;

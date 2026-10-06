@@ -106,7 +106,38 @@ async function requestBlob(path: string, opts: RequestOptions = {}): Promise<Blo
   return res.blob();
 }
 
+/** Multipart upload (the browser sets the boundary, so no Content-Type here). */
+async function upload<T>(path: string, file: File, field = "file"): Promise<T> {
+  const headers: Record<string, string> = {};
+  const accessToken = session.getAccessToken();
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  const workspaceId = session.getWorkspaceId();
+  if (workspaceId) headers["X-Workspace-Id"] = workspaceId;
+  const body = new FormData();
+  body.append(field, file);
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers, body });
+  if (!res.ok) {
+    let detail: unknown;
+    try {
+      detail = (await res.json()).detail;
+    } catch {
+      detail = res.statusText;
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.json();
+}
+
+/** Logos we host are stored as API paths ("/api/v1/media/…"); turn them into
+ * a URL the browser can load. External logo URLs pass through unchanged. */
+export function mediaUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (!path.startsWith("/api/")) return path;
+  return API_BASE.replace(/\/api\/v1\/?$/, "") + path;
+}
+
 export const http = {
+  upload,
   get: <T>(path: string, opts?: RequestOptions) => request<T>("GET", path, opts),
   post: <T>(path: string, body?: unknown, opts?: RequestOptions) =>
     request<T>("POST", path, { ...opts, body }),

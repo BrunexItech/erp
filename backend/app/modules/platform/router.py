@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.actor import Actor, get_actor, get_current_user, get_tenant_session, require_permission
+from app.core import media
 from app.core.db import get_session
 from app.modules.platform.models import User
 from app.modules.platform.schemas import (
@@ -84,6 +86,36 @@ async def update_branding(
     session: AsyncSession = Depends(get_tenant_session),
 ):
     return await PlatformService(session).update_branding(actor.workspace_id, payload)
+
+
+@router.post("/workspaces/branding/logo", response_model=BrandingOut)
+async def upload_logo(
+    file: UploadFile,
+    actor: Actor = Depends(require_permission("*")),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    data = await file.read(media.MAX_UPLOAD_BYTES + 1)
+    logo_url = media.save_logo(actor.workspace_id, data)
+    return await PlatformService(session).update_branding(actor.workspace_id, BrandingUpdate(logo_url=logo_url))
+
+
+@router.delete("/workspaces/branding/logo", response_model=BrandingOut)
+async def remove_logo(
+    actor: Actor = Depends(require_permission("*")),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    media.delete_logos(actor.workspace_id)
+    return await PlatformService(session).update_branding(actor.workspace_id, BrandingUpdate(logo_url=None))
+
+
+@router.get("/media/logos/{filename}")
+async def serve_logo(filename: str):
+    """Public on purpose: a logo appears on invoices sent to customers and in
+    <img> tags, which can't send an Authorization header."""
+    path = media.local_logo_path(media.LOGO_URL_PREFIX + filename)
+    if path is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "logo not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 @router.post("/workspaces/members", response_model=MemberOut)

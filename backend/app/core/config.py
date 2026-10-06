@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
     testing: bool = False
+    # Uploaded files (company logos). Mount a persistent volume here in production.
+    media_root: str = "media"
 
 
 settings = Settings()

@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LogOut, Menu, Search, ShieldCheck, X } from "lucide-react";
 import { useBranding, useMe } from "@/lib/api/hooks";
+import { mediaUrl } from "@/lib/api/http";
 import { useApi } from "@/lib/api/query";
 import { session } from "@/lib/session";
 import { CommandPalette } from "./CommandPalette";
@@ -76,7 +77,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="mb-5 flex items-center gap-3 px-2">
         {branding?.logo_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={branding.logo_url} alt="" className="h-9 w-9 rounded-lg bg-white object-contain p-0.5" />
+          <img src={mediaUrl(branding.logo_url) ?? ""} alt="" className="h-9 w-9 rounded-lg bg-white object-contain p-0.5" />
         ) : (
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-sm font-semibold text-white">{initials(brandName)}</div>
         )}

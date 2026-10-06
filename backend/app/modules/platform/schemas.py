@@ -60,6 +60,7 @@ class BrandingUpdate(BaseModel):
     tax_pin: str | None = None
     website: str | None = None
     brand_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    invoice_template: str | None = Field(default=None, pattern=r"^(modern|bold|classic)$")
     bank_details: str | None = None
     mpesa_paybill: str | None = None
     mpesa_till: str | None = None
@@ -79,6 +80,7 @@ class BrandingOut(BaseModel):
     tax_pin: str
     website: str
     brand_color: str
+    invoice_template: str
     bank_details: str
     mpesa_paybill: str
     mpesa_till: str
