@@ -15,6 +15,7 @@ from app.core import numbering as numbering_models  # noqa: F401
 # autogenerate compares against it.
 from app.modules.accounting import models as accounting_models  # noqa: F401
 from app.modules.assets import models as assets_models  # noqa: F401
+from app.modules.billing import models as billing_models  # noqa: F401
 from app.modules.crm import models as crm_models  # noqa: F401
 from app.modules.hr import models as hr_models  # noqa: F401
 from app.modules.inventory import models as inventory_models  # noqa: F401

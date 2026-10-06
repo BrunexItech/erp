@@ -18,7 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import mailer
 from app.core.config import settings
-from app.core.security import create_access_token, create_refresh_token, hash_password, verify_password
+from app.core import totp
+from app.core.security import hash_password, verify_password
 from app.modules.platform.models import (
     AuthToken,
     AuthTokenPurpose,
@@ -251,7 +252,9 @@ class AccountService:
                 WorkspaceMember(workspace_id=token.workspace_id, user_id=user.id, role=WorkspaceRole(token.role))
             )
         await self.session.commit()
-        return TokenResponse(access_token=create_access_token(user.id), refresh_token=create_refresh_token(user.id))
+        from app.modules.platform.service import issue_tokens
+
+        return issue_tokens(user)
 
     async def _member(self, workspace_id: str, member_id: str) -> WorkspaceMember:
         member = (
@@ -335,11 +338,49 @@ class AccountService:
         token = await self._consume(raw, AuthTokenPurpose.password_reset)
         user = (await self.session.execute(select(User).where(User.id == token.user_id))).scalar_one()
         user.hashed_password = hash_password(new_password)
+        user.token_version += 1  # signs out every existing session
         await self.session.commit()
 
-    async def change_password(self, user: User, current: str, new_password: str) -> None:
+    async def change_password(self, user: User, current: str, new_password: str) -> TokenResponse:
+        """Other devices are signed out; the caller gets fresh tokens so the
+        session that made the change carries on."""
+        from app.modules.platform.service import issue_tokens
+
         if not verify_password(current, user.hashed_password):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "current password is incorrect")
         validate_password(new_password)
         user.hashed_password = hash_password(new_password)
+        user.token_version += 1
+        await self.session.commit()
+        return issue_tokens(user)
+
+    # ------------------------------------------------------------ two-factor
+
+    async def totp_begin(self, user: User, issuer: str) -> dict:
+        if user.totp_enabled:
+            raise HTTPException(status.HTTP_409_CONFLICT, "two-factor sign-in is already on")
+        user.totp_secret = totp.new_secret()
+        await self.session.commit()
+        uri = totp.provisioning_uri(user.totp_secret, user.email, issuer)
+        return {"secret": user.totp_secret, "uri": uri, "qr_svg": totp.qr_svg(uri)}
+
+    async def totp_enable(self, user: User, code: str) -> list[str]:
+        """Turns it on only after a correct code — proof the app is really set
+        up — and returns one-time recovery codes, shown exactly once."""
+        if user.totp_enabled:
+            raise HTTPException(status.HTTP_409_CONFLICT, "two-factor sign-in is already on")
+        if not user.totp_secret or not totp.verify(user.totp_secret, code):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "that code isn't right — check the time on your phone and try again")
+        codes = totp.new_recovery_codes()
+        user.totp_enabled = True
+        user.recovery_codes = [totp.hash_recovery(c) for c in codes]
+        await self.session.commit()
+        return codes
+
+    async def totp_disable(self, user: User, password: str) -> None:
+        if not verify_password(password, user.hashed_password):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "password is incorrect")
+        user.totp_enabled = False
+        user.totp_secret = None
+        user.recovery_codes = []
         await self.session.commit()

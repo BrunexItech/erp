@@ -15,6 +15,15 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    totp_code: str | None = None  # 6-digit authenticator code, or a recovery code
+
+
+class TotpCode(BaseModel):
+    code: str
+
+
+class PasswordConfirm(BaseModel):
+    password: str
 
 
 class RefreshRequest(BaseModel):

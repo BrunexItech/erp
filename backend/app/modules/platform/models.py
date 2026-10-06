@@ -4,7 +4,9 @@ import enum
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, String, UniqueConstraint
+from decimal import Decimal
+
+from sqlalchemy import JSON, Boolean, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base, TenantModel
@@ -22,6 +24,11 @@ class Package(Base):
     limits: Mapped[dict] = mapped_column(JSON, default=dict)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[str] = mapped_column(String(300), default="")
+    price_monthly: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    price_yearly: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    trial_days: Mapped[int] = mapped_column(default=14)
+    sort_order: Mapped[int] = mapped_column(default=0)
 
 
 class Workspace(Base):
@@ -74,6 +81,13 @@ class User(Base):
     # Platform operator (super admin) — see actor.require_platform_admin.
     # Granted from the command line: `python -m app.cli make-admin <email>`.
     is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Bumped when the password changes: every token issued before then stops
+    # working, so a stolen session dies with the old password.
+    token_version: Mapped[int] = mapped_column(default=0)
+    # Two-factor sign-in (TOTP authenticator app).
+    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    recovery_codes: Mapped[list] = mapped_column(JSON, default=list)  # SHA-256 hashes, each usable once
 
 
 class WorkspaceRole(str, enum.Enum):

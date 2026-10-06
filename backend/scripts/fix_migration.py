@@ -13,7 +13,7 @@ import re
 import sys
 
 # Have a workspace_id column but are read across workspaces by design.
-PLATFORM_TABLES = {"workspace_members", "auth_tokens", "email_log", "subscriptions", "subscription_invoices", "admin_audit_log", "announcements"}
+PLATFORM_TABLES = {"workspace_members", "auth_tokens", "email_log", "subscriptions", "subscription_invoices", "admin_audit_log", "announcements", "platform_settings"}
 
 
 def fix(path: str) -> None:

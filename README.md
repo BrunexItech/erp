@@ -162,3 +162,48 @@ The till is a separate full-screen app at **/pos**.
 
 Sales need a connection: the till shows a clear offline banner and pauses
 checkout rather than risk stock or the books diverging between tills.
+
+## Running it as a business (billing, support, operations)
+
+**Packages and prices** — Admin console → Packages. Each package has the
+modules it includes, user/product limits, a monthly and yearly price and a
+free-trial length. One package is the default for new sign-ups. The three
+seeded prices (2,500 / 7,500 / 20,000 KES) are placeholders: set your own.
+
+**Subscriptions** — a new business starts on its package's free trial. A
+renewal invoice (SUB-000001…) is raised a week before the trial or paid
+period ends. When the customer pays (M-Pesa, bank…), record it under Admin
+console → Billing: their access is extended at once. If they don't pay there
+is a grace period (default 7 days, Platform settings), after which the
+account pauses — they can still sign in and see how to pay, and no data is
+deleted. Free packages are never billed; mark your own or partner accounts
+"Complimentary". Businesses that existed before billing launched were given
+an open-ended active subscription.
+
+Raise invoices on a schedule (optional — they are also raised whenever a
+billing screen is opened):
+
+```bash
+0 6 * * * cd /srv/erp && docker compose exec -T backend python -m app.cli billing-cycle
+```
+
+**Support** — in a customer's drawer: sign in as their owner for 30 minutes
+(shown to you with a red banner, and written to the audit log), create a
+password-reset link for any of their users, or create a new business on a
+customer's behalf and invite them as owner.
+
+**Email** — set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`,
+`MAIL_FROM` and `APP_URL` in `backend/.env`. Until then every email
+(invitations, password resets, invoices) is saved as an `.eml` file in
+`backend/media/outbox` and the app says so rather than pretending it was sent.
+
+**Security** — turn on two-step sign-in for the platform admin account
+(Settings → Security). Sign-in and password-reset attempts are rate-limited;
+changing a password signs out every other device.
+
+**Backups** — `backend/scripts/backup.sh` dumps the database and uploaded
+logos and keeps 14 days; see the cron line and restore commands at the top of
+the script. Copy the backups off the server.
+
+**Monitoring** — point your uptime monitor at `/health/ready` (checks the
+database). Unhandled errors are logged with a short reference the user sees.

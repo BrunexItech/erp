@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import features as feature_defs
 from app.core.db import get_session, set_tenant_context
-from app.core.security import decode_token
+from app.core.security import decode_claims
 from app.modules.platform.models import Package, User, Workspace, WorkspaceMember
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -23,6 +23,8 @@ class Actor:
     role: str
     permissions: set[str]
     features: set[str]
+    billing_level: str = "ok"  # ok | grace | locked (see billing.service.access_for)
+    billing_message: str = ""
 
 
 async def get_current_user(
@@ -32,15 +34,18 @@ async def get_current_user(
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
     try:
-        user_id = decode_token(credentials.credentials, expected_type="access")
+        claims = decode_claims(credentials.credentials, expected_type="access")
     except JWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired token")
 
     user = (
-        await session.execute(select(User).where(User.id == user_id))
+        await session.execute(select(User).where(User.id == claims["sub"]))
     ).scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found or inactive")
+    # Tokens issued before the last password change are dead.
+    if claims.get("tv", 0) != user.token_version:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session ended — sign in again")
     return user
 
 
@@ -78,12 +83,18 @@ async def get_actor(
         package_modules, workspace.module_overrides, user.module_overrides
     )
 
+    from app.modules.billing.service import BillingService
+
+    access = await BillingService(session).access(workspace.id)
+
     return Actor(
         user_id=user.id,
         workspace_id=workspace.id,
         role=membership.role.value if hasattr(membership.role, "value") else membership.role,
         permissions=membership.effective_permissions(),
         features=effective,
+        billing_level=access.level,
+        billing_message=access.message,
     )
 
 
@@ -107,8 +118,17 @@ def require_permission(name: str):
     return checker
 
 
+def _require_paid(actor: Actor) -> None:
+    """Business modules stop when the subscription has lapsed past its grace
+    period. Sign-in, Settings and the Billing page keep working (they don't go
+    through this), so the customer can always see why and pay."""
+    if actor.billing_level == "locked":
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, actor.billing_message or "subscription required")
+
+
 def require_feature(*module_keys: str):
     async def checker(actor: Actor = Depends(get_actor)) -> Actor:
+        _require_paid(actor)
         if not any(key in actor.features for key in module_keys):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
@@ -128,6 +148,7 @@ def module_access(feature: str, permission_prefix: str | None = None):
     prefix = permission_prefix or feature
 
     async def checker(request: Request, actor: Actor = Depends(get_actor)) -> Actor:
+        _require_paid(actor)
         if feature not in actor.features:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"workspace package does not include: {feature}")
         if "*" in actor.permissions:

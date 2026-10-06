@@ -8,7 +8,9 @@ import { useBranding, useMe, useWorkspaces } from "@/lib/api/hooks";
 import { mediaUrl } from "@/lib/api/http";
 import { useApi } from "@/lib/api/query";
 import { session } from "@/lib/session";
+import { BillingPanel } from "@/components/billing/BillingPanel";
 import { CommandPalette } from "./CommandPalette";
+import { Notices } from "./Notices";
 import { NAV_GROUPS, NavItem } from "./nav";
 
 interface CurrentUser {
@@ -193,8 +195,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Search className="h-5 w-5" />
           </button>
         </header>
+        <Notices me={me} />
         <main className="flex-1 px-4 py-6 md:px-10 md:py-8">
-          {isLoading ? <p className="text-sm text-slate-400">Loading…</p> : <div className="mx-auto max-w-7xl">{children}</div>}
+          {isLoading ? (
+            <p className="text-sm text-slate-400">Loading…</p>
+          ) : me?.billing?.level === "locked" && !pathname?.startsWith("/dashboard/settings") ? (
+            // Subscription lapsed: every business screen would only return
+            // "payment required", so show why and how to pay instead.
+            <div className="mx-auto max-w-5xl"><BillingPanel /></div>
+          ) : (
+            <div className="mx-auto max-w-7xl">{children}</div>
+          )}
         </main>
       </div>
 

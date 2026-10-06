@@ -4,12 +4,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import events
+from app.core import events, totp
 from app.core.db import set_tenant_context
 from app.core.security import (
     create_access_token,
     create_refresh_token,
-    decode_token,
+    decode_claims,
     hash_password,
     verify_password,
 )
@@ -20,6 +20,13 @@ from app.modules.platform.schemas import (
     SignupRequest,
     TokenResponse,
 )
+
+
+def issue_tokens(user: User) -> TokenResponse:
+    return TokenResponse(
+        access_token=create_access_token(user.id, user.token_version),
+        refresh_token=create_refresh_token(user.id, user.token_version),
+    )
 
 
 class PlatformService:
@@ -70,13 +77,13 @@ class PlatformService:
         self.session.add(membership)
         await self.session.flush()
 
+        from app.modules.billing.service import BillingService
+
+        await BillingService(self.session).start_for_new_workspace(workspace, default_package)
         await events.publish(events.WorkspaceCreated(workspace_id=workspace.id), self.session)
         await self.session.commit()
 
-        return TokenResponse(
-            access_token=create_access_token(user.id),
-            refresh_token=create_refresh_token(user.id),
-        )
+        return issue_tokens(user)
 
     async def login(self, payload: LoginRequest) -> TokenResponse:
         user = (
@@ -87,27 +94,36 @@ class PlatformService:
         if not user.is_active:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "account disabled")
 
-        return TokenResponse(
-            access_token=create_access_token(user.id),
-            refresh_token=create_refresh_token(user.id),
-        )
+        if user.totp_enabled:
+            code = (payload.totp_code or "").strip()
+            if not code:
+                # Password was right; the client now asks for the 6-digit code.
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "totp_required")
+            if not totp.verify(user.totp_secret or "", code):
+                hashed = totp.hash_recovery(code)
+                if hashed not in (user.recovery_codes or []):
+                    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "that code isn't valid — check your authenticator app")
+                user.recovery_codes = [c for c in user.recovery_codes if c != hashed]  # one use each
+                await self.session.commit()
+
+        return issue_tokens(user)
 
     async def refresh(self, refresh_token: str) -> TokenResponse:
         try:
-            user_id = decode_token(refresh_token, expected_type="refresh")
+            claims = decode_claims(refresh_token, expected_type="refresh")
         except Exception:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid refresh token")
+        user_id = claims["sub"]
 
         user = (
             await self.session.execute(select(User).where(User.id == user_id))
         ).scalar_one_or_none()
         if user is None or not user.is_active:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found or inactive")
+        if claims.get("tv", 0) != user.token_version:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session ended — sign in again")
 
-        return TokenResponse(
-            access_token=create_access_token(user.id),
-            refresh_token=create_refresh_token(user.id),
-        )
+        return issue_tokens(user)
 
     async def list_workspaces_for_user(self, user_id: str) -> list[dict]:
         rows = await self.session.execute(

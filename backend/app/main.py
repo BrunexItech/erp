@@ -50,4 +50,49 @@ app.include_router(manufacturing_router, dependencies=[Depends(require_feature("
 
 @app.get("/health")
 async def health():
+    """Liveness: the process is up."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def ready():
+    """Readiness for load balancers and uptime monitors: can we actually
+    reach the database (required) and Redis (optional — only rate limiting
+    depends on it)?"""
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import text
+
+    from app.core.db import SessionLocal
+
+    checks = {"database": "ok", "redis": "ok"}
+    try:
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        checks["database"] = f"error: {type(exc).__name__}"
+    try:
+        from app.core.ratelimit import _redis
+
+        await _redis().ping()
+    except Exception as exc:
+        checks["redis"] = f"unavailable: {type(exc).__name__}"
+    healthy = checks["database"] == "ok"
+    return JSONResponse({"status": "ok" if healthy else "degraded", **checks}, status_code=200 if healthy else 503)
+
+
+@app.middleware("http")
+async def log_unhandled_errors(request, call_next):
+    """Anything that escapes a handler is logged with enough to find it —
+    method, path and a short id the user can quote — and answered with a
+    plain 500 instead of a stack trace."""
+    import logging
+    import uuid
+
+    from fastapi.responses import JSONResponse
+
+    try:
+        return await call_next(request)
+    except Exception:
+        error_id = uuid.uuid4().hex[:8]
+        logging.getLogger("erp").exception("unhandled error %s on %s %s", error_id, request.method, request.url.path)
+        return JSONResponse({"detail": f"Something went wrong on our side (reference {error_id})."}, status_code=500)

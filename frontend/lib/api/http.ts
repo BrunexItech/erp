@@ -12,6 +12,20 @@ export class ApiError extends Error {
   }
 }
 
+/** A dead session: normally back to sign-in. But if a platform admin was
+ * signed in as a customer (support sessions last 30 minutes and can't be
+ * extended), put the admin's own session back instead of logging them out. */
+function endSession() {
+  if (typeof window === "undefined") return;
+  if (session.impersonating()) {
+    session.stopImpersonating();
+    window.location.href = "/admin";
+    return;
+  }
+  session.clear();
+  window.location.href = "/login";
+}
+
 let refreshInFlight: Promise<boolean> | null = null;
 
 async function refreshAccessToken(): Promise<boolean> {
@@ -67,8 +81,7 @@ async function request<T>(method: string, path: string, opts: RequestOptions = {
     if (refreshed) {
       return request<T>(method, path, { ...opts, skipRetry: true });
     }
-    session.clear();
-    if (typeof window !== "undefined") window.location.href = "/login";
+    endSession();
     throw new ApiError(401, "session expired");
   }
 
@@ -98,8 +111,7 @@ async function requestBlob(path: string, opts: RequestOptions = {}): Promise<Blo
   if (res.status === 401 && !opts.skipRetry) {
     const refreshed = await refreshAccessToken();
     if (refreshed) return requestBlob(path, { ...opts, skipRetry: true });
-    session.clear();
-    if (typeof window !== "undefined") window.location.href = "/login";
+    endSession();
     throw new ApiError(401, "session expired");
   }
   if (!res.ok) throw new ApiError(res.status, res.statusText);

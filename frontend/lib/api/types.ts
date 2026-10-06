@@ -30,6 +30,7 @@ export interface Me {
   role: string;
   permissions: string[];
   features: string[];
+  billing?: { level: "ok" | "grace" | "locked"; message: string };
 }
 
 export interface Party {

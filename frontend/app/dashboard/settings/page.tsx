@@ -6,18 +6,24 @@ import { Button, Card, ErrorBanner, Field, Input, PageHeader, Select, Tabs, Text
 import { SecurityTab } from "@/components/settings/SecurityTab";
 import { TeamTab } from "@/components/settings/TeamTab";
 import { errorMessage } from "@/lib/api/query";
+import { BillingPanel } from "@/components/billing/BillingPanel";
 import { DesignPicker } from "@/components/branding/DesignPicker";
 import { LogoUploader } from "@/components/branding/LogoUploader";
 import type { Branding } from "@/lib/api/types";
 
 type Form = Omit<Branding, "logo_url"> & { logo_url: string };
 
-type Tab = "company" | "team" | "security";
+type Tab = "company" | "team" | "billing" | "security";
 
 export default function SettingsPage() {
   const { data: me } = useMe();
   const isAdmin = !!me?.permissions.includes("*");
   const [tab, setTab] = useState<Tab | null>(null);
+  // Deep link from the "Pay now" banner: /dashboard/settings?tab=billing
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    if (wanted === "billing" || wanted === "team" || wanted === "security") setTab(wanted);
+  }, []);
   const active: Tab = tab ?? (isAdmin ? "company" : "security");
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -28,11 +34,13 @@ export default function SettingsPage() {
         tabs={[
           ...(isAdmin ? [{ key: "company" as Tab, label: "Company & documents" }] : []),
           { key: "team" as Tab, label: "Team" },
+          ...(isAdmin ? [{ key: "billing" as Tab, label: "Plan & billing" }] : []),
           { key: "security" as Tab, label: "Security" },
         ]}
       />
       {active === "company" && <CompanyTab />}
       {active === "team" && <TeamTab />}
+      {active === "billing" && <BillingPanel />}
       {active === "security" && <SecurityTab />}
     </div>
   );

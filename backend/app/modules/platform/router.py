@@ -20,10 +20,12 @@ from app.modules.platform.schemas import (
     MemberInvite,
     MemberOut,
     RefreshRequest,
+    PasswordConfirm,
     ResetPassword,
     RoleUpdate,
     SignupRequest,
     TokenResponse,
+    TotpCode,
     WorkspaceOut,
 )
 from app.modules.platform.service import PlatformService
@@ -65,6 +67,7 @@ async def current_user(user: User = Depends(get_current_user)):
         "email": user.email,
         "full_name": user.full_name,
         "is_platform_admin": user.is_platform_admin,
+        "totp_enabled": user.totp_enabled,
     }
 
 
@@ -80,7 +83,26 @@ async def me(actor: Actor = Depends(get_actor)):
         "role": actor.role,
         "permissions": sorted(actor.permissions),
         "features": sorted(actor.features),
+        "billing": {"level": actor.billing_level, "message": actor.billing_message},
     }
+
+
+@router.get("/workspaces/billing")
+async def workspace_billing(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_session)):
+    """The customer's own subscription: plan, status, invoices and how to pay."""
+    from app.modules.billing.service import BillingService
+
+    return await BillingService(session).overview(actor.workspace_id)
+
+
+@router.get("/announcements")
+async def announcements(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    from app.modules.billing.service import BillingService
+
+    return [
+        {"id": a.id, "title": a.title, "body": a.body, "level": a.level}
+        for a in await BillingService(session).active_announcements()
+    ]
 
 
 @router.get("/workspaces/branding", response_model=BrandingOut)
@@ -213,11 +235,32 @@ async def reset_password(payload: ResetPassword, session: AsyncSession = Depends
     return {"ok": True}
 
 
-@router.post("/auth/change-password")
+@router.post("/auth/change-password", response_model=TokenResponse)
 async def change_password(
     payload: ChangePassword,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    await AccountService(session).change_password(user, payload.current_password, payload.new_password)
+    return await AccountService(session).change_password(user, payload.current_password, payload.new_password)
+
+
+# ------------------------------------------------------------ two-factor
+
+
+@router.post("/auth/2fa/setup")
+async def totp_setup(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    from app.modules.billing.service import BillingService
+
+    issuer = (await BillingService(session).settings()).product_name
+    return await AccountService(session).totp_begin(user, issuer)
+
+
+@router.post("/auth/2fa/enable")
+async def totp_enable(payload: TotpCode, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    return {"recovery_codes": await AccountService(session).totp_enable(user, payload.code)}
+
+
+@router.post("/auth/2fa/disable")
+async def totp_disable(payload: PasswordConfirm, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    await AccountService(session).totp_disable(user, payload.password)
     return {"ok": True}
