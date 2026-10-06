@@ -17,8 +17,12 @@ import {
 } from "@/components/om/primitives";
 import { errorMessage, openFile, useApi, useApiMutation } from "@/lib/api/query";
 import { EmailDialog } from "./EmailDialog";
+import { MpesaPrompt } from "./MpesaPrompt";
+import { Attachments } from "@/components/om/Attachments";
+import { useQueryClient } from "@tanstack/react-query";
+import { useParties } from "@/lib/api/hooks";
 import { fmtDate, fmtMoney, fmtQty, humanize, num, today } from "@/lib/format";
-import type { CreditNote, InvoiceDetail as InvoiceDetailT, Payment, Warehouse } from "@/lib/api/types";
+import type { CreditNote, InvoiceDetail as InvoiceDetailT, MpesaConfig, Payment, Warehouse } from "@/lib/api/types";
 
 export const INVOICE_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
   draft: "neutral",
@@ -39,13 +43,16 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
   const { data: payments } = useApi<Payment[]>(invoiceId ? `/sales/payments?invoice_id=${invoiceId}` : null);
   const { data: credits } = useApi<CreditNote[]>(invoiceId ? `/sales/credit-notes?invoice_id=${invoiceId}` : null);
   const { data: warehouses } = useApi<Warehouse[]>("/inventory/warehouses");
+  const { data: mpesa } = useApi<MpesaConfig>("/sales/mpesa/config");
+  const qc = useQueryClient();
+  const { data: parties } = useParties();
 
   const pay = useApiMutation("post", "/sales/invoices/payments", REFRESH);
   const credit = useApiMutation("post", "/sales/credit-notes", REFRESH);
   const resubmit = useApiMutation<undefined>("post", () => `/sales/invoices/${invoiceId}/etims`, REFRESH);
   const voidInvoice = useApiMutation<{ reason: string }>("post", () => `/sales/invoices/${invoiceId}/void`, REFRESH);
 
-  const [panel, setPanel] = useState<"none" | "pay" | "credit" | "void">("none");
+  const [panel, setPanel] = useState<"none" | "pay" | "mpesa" | "credit" | "void">("none");
   const [emailing, setEmailing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
@@ -114,6 +121,9 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
             </Button>
             {invoice.status !== "void" && <Button variant="secondary" onClick={() => setEmailing(true)}>Email to customer</Button>}
             {open && <Button onClick={() => { setAmount(String(balance)); setPanel("pay"); }}>Record payment</Button>}
+            {open && mpesa?.configured && mpesa.is_active && balance >= 1 && (
+              <Button variant="secondary" onClick={() => { setError(null); setPanel("mpesa"); }}>Request M-Pesa payment</Button>
+            )}
             {invoice.status !== "void" && num(invoice.amount_credited) < num(invoice.total) && (
               <Button variant="secondary" onClick={() => setPanel("credit")}>Issue credit note</Button>
             )}
@@ -154,6 +164,17 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
                 <Button type="submit" disabled={pay.isPending} className="w-full">Save payment</Button>
               </div>
             </form>
+          )}
+
+          {panel === "mpesa" && (
+            <MpesaPrompt
+              amount={balance}
+              invoiceId={invoice.id}
+              reference={invoice.invoice_no}
+              defaultPhone={parties?.find((p) => p.id === invoice.party_id)?.phone ?? ""}
+              onPaid={() => { for (const key of REFRESH) qc.invalidateQueries({ queryKey: key }); }}
+              onCancel={() => setPanel("none")}
+            />
           )}
 
           {panel === "credit" && (
@@ -320,6 +341,8 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
           )}
 
           <EmailDialog open={emailing} onClose={() => setEmailing(false)} title={`Email ${invoice.invoice_no}`} endpoint={`/sales/invoices/${invoice.id}/email`} />
+
+          <Attachments entityType="invoice" entityId={invoice.id} />
 
           {(invoice.notes || invoice.terms) && (
             <div className="grid gap-4 text-sm text-slate-600 dark:text-slate-300 sm:grid-cols-2">

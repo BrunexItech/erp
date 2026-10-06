@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import HTTPException, status
@@ -73,16 +73,33 @@ class DocumentTotals:
     total: Decimal
 
 
-def compute_lines(lines: list[DocumentLineInput], descriptions: dict[str, str]) -> tuple[list[ComputedLine], DocumentTotals]:
+def compute_lines(
+    lines: list[DocumentLineInput], descriptions: dict[str, str], prices_include_tax: bool = False
+) -> tuple[list[ComputedLine], DocumentTotals]:
     """Per-line rounding (not per-document) — each printed line total must add
     up exactly to the printed document total, which is what KRA-compliant tax
-    invoices and customers checking the arithmetic expect."""
+    invoices and customers checking the arithmetic expect.
+
+    With prices_include_tax the entered price is what the customer pays (the
+    shelf price): VAT is taken out of it rather than added on, so 2 x 116.00
+    is exactly 232.00 — never 231.99 or 232.01.
+    """
     computed: list[ComputedLine] = []
     for line in lines:
         gross = line.qty * line.unit_price
         discount = q2(gross * line.discount_pct / 100)
-        line_subtotal = q2(gross) - discount
-        tax = q2(line_subtotal * line.tax_rate)
+        after_discount = q2(gross) - discount
+        if prices_include_tax and line.tax_rate:
+            line_total = after_discount
+            tax = q2(line_total * line.tax_rate / (1 + line.tax_rate))
+            line_subtotal = line_total - tax
+            unit_price = (line.unit_price / (1 + line.tax_rate)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            discount = q2(discount / (1 + line.tax_rate))
+        else:
+            line_subtotal = after_discount
+            tax = q2(line_subtotal * line.tax_rate)
+            line_total = line_subtotal + tax
+            unit_price = line.unit_price
         description = line.description or (descriptions.get(line.product_id, "") if line.product_id else "")
         if not description:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "each line needs a product or a description")
@@ -91,12 +108,12 @@ def compute_lines(lines: list[DocumentLineInput], descriptions: dict[str, str]) 
                 product_id=line.product_id,
                 description=description,
                 qty=line.qty,
-                unit_price=line.unit_price,
+                unit_price=unit_price,
                 discount_pct=line.discount_pct,
                 tax_rate=line.tax_rate,
                 line_subtotal=line_subtotal,
                 tax_amount=tax,
-                line_total=line_subtotal + tax,
+                line_total=line_total,
                 discount_amount=discount,
             )
         )
@@ -144,6 +161,9 @@ class SalesService:
         from app.modules.platform.service import PlatformService
 
         return await PlatformService(self.session).get_workspace(self.workspace_id)
+
+    async def _inclusive(self, requested: bool | None) -> bool:
+        return (await self._workspace()).prices_include_tax if requested is None else requested
 
     async def _default_due_date(self, party_id: str, issue_date: date) -> date:
         from app.modules.crm.models import CustomerProfile
@@ -371,7 +391,16 @@ class SalesService:
             for l in order_lines
         ]
 
-    async def create_invoice(self, payload: InvoiceCreate, *, quote_id: str | None = None) -> Invoice:
+    async def create_invoice(
+        self,
+        payload: InvoiceCreate,
+        *,
+        quote_id: str | None = None,
+        precomputed: tuple[list[ComputedLine], DocumentTotals] | None = None,
+    ) -> Invoice:
+        """`precomputed` carries line amounts that were already agreed (a quote
+        being converted): they are copied exactly, never recalculated, so the
+        invoice can't differ from the quote by a rounding cent."""
         issue_date = payload.issue_date or date.today()
         due_date = payload.due_date or await self._default_due_date(payload.party_id, issue_date)
 
@@ -382,13 +411,17 @@ class SalesService:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "sales order not found")
 
         line_inputs = payload.lines
+        # Sales-order and converted-quote lines are stored net of VAT already.
+        inclusive = bool(line_inputs) and quote_id is None and await self._inclusive(payload.prices_include_tax)
         if not line_inputs and order is not None:
             line_inputs = await self._lines_from_order(order.id)
 
         computed: list[ComputedLine] = []
-        if line_inputs:
+        if precomputed is not None:
+            computed, totals = precomputed
+        elif line_inputs:
             descriptions = await self._product_descriptions({l.product_id for l in line_inputs if l.product_id})
-            computed, totals = compute_lines(line_inputs, descriptions)
+            computed, totals = compute_lines(line_inputs, descriptions, inclusive)
         elif payload.subtotal is not None:
             # Legacy un-itemized invoice: totals only.
             totals = DocumentTotals(
@@ -822,7 +855,7 @@ class SalesService:
     async def create_quote(self, payload: QuoteCreate) -> Quote:
         await self._party(payload.party_id)
         descriptions = await self._product_descriptions({l.product_id for l in payload.lines if l.product_id})
-        computed, totals = compute_lines(payload.lines, descriptions)
+        computed, totals = compute_lines(payload.lines, descriptions, await self._inclusive(payload.prices_include_tax))
         issue_date = payload.issue_date or date.today()
         workspace = await self._workspace()
         quote = Quote(
@@ -915,12 +948,38 @@ class SalesService:
                 ],
             ),
             quote_id=quote.id,
+            precomputed=(
+                [
+                    ComputedLine(
+                        product_id=l.product_id, description=l.description, qty=l.qty, unit_price=l.unit_price,
+                        discount_pct=l.discount_pct, tax_rate=l.tax_rate, line_subtotal=l.line_subtotal,
+                        tax_amount=l.tax_amount, line_total=l.line_total, discount_amount=ZERO,
+                    )
+                    for l in lines
+                ],
+                DocumentTotals(subtotal=quote.subtotal, discount_total=quote.discount_total, tax_total=quote.tax_total, total=quote.total),
+            ),
         )
         quote.converted_invoice_id = invoice.id
         await self.session.commit()
         return invoice
 
     # -------------------------------------------------------------------- POS
+
+    @staticmethod
+    def _sale_date(sold_at: datetime | None) -> date:
+        """The calendar day at the till. Tills send the moment of sale in UTC;
+        a clock that is wrong and in the future is not believed."""
+        from zoneinfo import ZoneInfo
+
+        from app.core.config import settings
+
+        zone = ZoneInfo(settings.business_timezone)
+        now = datetime.now(zone)
+        if sold_at is None:
+            return now.date()
+        local = sold_at.astimezone(zone) if sold_at.tzinfo else sold_at.replace(tzinfo=zone)
+        return min(local, now).date()
 
     async def pos_checkout(self, payload: PosCheckoutRequest, cashier_user_id: str | None = None) -> tuple[Invoice, Decimal, ArPaymentEntry]:
         """Instant walk-in sale for a POS till: order (created already
@@ -932,6 +991,16 @@ class SalesService:
 
         Returns (Invoice, total_cogs, payment).
         """
+        if payload.client_ref:
+            earlier = await self.invoices.list(Invoice.client_ref == payload.client_ref)
+            if earlier:
+                # This exact sale already went through — report it, don't repeat it.
+                invoice = earlier[0]
+                payments = await self.ar_entries.list(
+                    ArPaymentEntry.invoice_id == invoice.id, ArPaymentEntry.type == ArPaymentEntryType.payment
+                )
+                return invoice, ZERO, payments[0]
+
         party_id = payload.party_id
         if not party_id:
             from app.modules.crm.service import CrmService
@@ -946,8 +1015,10 @@ class SalesService:
                 for l in payload.lines
             ],
             descriptions,
+            await self._inclusive(payload.prices_include_tax),
         )
-        today = date.today()
+        # A sale rung up offline is dated when it happened, not when it synced.
+        today = self._sale_date(payload.sold_at)
         order, total_cogs = await self._ship_new_order(
             party_id=party_id,
             lines=computed,
@@ -971,6 +1042,7 @@ class SalesService:
             channel="pos",
             warehouse_id=payload.warehouse_id,
             cashier_user_id=cashier_user_id,
+            client_ref=payload.client_ref,
             subtotal=totals.subtotal,
             tax_total=totals.tax_total,
             total=totals.total,
@@ -1277,6 +1349,79 @@ class SalesService:
         aging = await self.ar_aging(end, party_id=party_id)
         buckets = aging["rows"][0] if aging["rows"] else {**empty_buckets(), "total": ZERO}
         return documents.render_statement(workspace=workspace, party=party, statement=statement, aging=buckets)
+
+    # -------------------------------------------------------------- recurring
+
+    @staticmethod
+    def _advance(current: date, frequency: str) -> date:
+        import calendar
+
+        if frequency == "weekly":
+            return current + timedelta(days=7)
+        months = {"monthly": 1, "quarterly": 3, "yearly": 12}[frequency]
+        index = current.month - 1 + months
+        year, month = current.year + index // 12, index % 12 + 1
+        return date(year, month, min(current.day, calendar.monthrange(year, month)[1]))
+
+    async def create_recurring(self, payload):
+        from app.modules.sales.models import RecurringFrequency, RecurringInvoice
+
+        await self._party(payload.party_id)
+        # Fail now, not on the first scheduled run, if the lines are invalid.
+        descriptions = await self._product_descriptions({l.product_id for l in payload.lines if l.product_id})
+        inclusive = await self._inclusive(payload.prices_include_tax)
+        compute_lines(payload.lines, descriptions, inclusive)
+        template = RecurringInvoice(
+            party_id=payload.party_id, name=payload.name, frequency=RecurringFrequency(payload.frequency),
+            next_date=payload.next_date, end_date=payload.end_date, reference=payload.reference, notes=payload.notes,
+            prices_include_tax=inclusive, email_to_customer=payload.email_to_customer,
+            lines=[l.model_dump(mode="json") for l in payload.lines],
+        )
+        await TenantRepository(self.session, self.workspace_id, RecurringInvoice).add(template)
+        await self.session.commit()
+        await self.session.refresh(template)
+        return template
+
+    async def run_recurring(self, today: date | None = None, sent_by: str = "") -> list[Invoice]:
+        """Raises every invoice that has fallen due — including any missed
+        while nobody ran this (each dated the day it was due), up to a year
+        back. Safe to call as often as you like."""
+        from app.modules.sales.models import RecurringInvoice
+
+        today = today or date.today()
+        repo = TenantRepository(self.session, self.workspace_id, RecurringInvoice)
+        due = await repo.list(RecurringInvoice.is_active.is_(True), RecurringInvoice.next_date <= today)
+        raised: list[Invoice] = []
+        for stale in due:
+            template = await repo.get_for_update(stale.id)
+            for _ in range(60):  # hard stop on runaway catch-up
+                if not template.is_active or template.next_date > today:
+                    break
+                if template.end_date and template.next_date > template.end_date:
+                    template.is_active = False
+                    break
+                issue_date = template.next_date
+                invoice = await self.create_invoice(
+                    InvoiceCreate(
+                        party_id=template.party_id, issue_date=issue_date, reference=template.reference, notes=template.notes,
+                        prices_include_tax=template.prices_include_tax,
+                        lines=[DocumentLineInput(**line) for line in template.lines],
+                    )
+                )
+                template = await repo.get_for_update(stale.id)  # create_invoice committed
+                template.next_date = self._advance(issue_date, template.frequency.value)
+                template.invoices_raised += 1
+                template.last_invoice_id = invoice.id
+                if template.end_date and template.next_date > template.end_date:
+                    template.is_active = False
+                await self.session.commit()
+                raised.append(invoice)
+                if template.email_to_customer:
+                    try:
+                        await self.email_document(kind="invoice", document_id=invoice.id, to=None, cc=[], message="", sent_by=sent_by)
+                    except HTTPException:
+                        pass  # no address on file: the invoice still exists to send by hand
+        return raised
 
     # ------------------------------------------------------------------ email
 

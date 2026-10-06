@@ -1,30 +1,8 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import { Paperclip, Plus } from "lucide-react";
 import { useCreatePurchaseOrder, useMe, useParties, usePurchaseOrders, useProducts, useVendorBills } from "@/lib/api/hooks";
-
-type Tab = "orders" | "bills" | "payables";
-
-export default function PurchasingPage() {
-  const [tab, setTab] = useState<Tab>("orders");
-  return (
-    <div className="space-y-6">
-      <PageHeader title="Purchasing & Payables" description="Purchase orders, goods receipts, supplier bills, expenses and payments." />
-      <Tabs<Tab>
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { key: "orders", label: "Purchase orders" },
-          { key: "bills", label: "Bills & expenses" },
-          { key: "payables", label: "Payables aging" },
-        ]}
-      />
-      {tab === "orders" && <OrdersTab />}
-      {tab === "bills" && <BillsTab />}
-      {tab === "payables" && <PayablesTab />}
-    </div>
-  );
-}
 import {
   Badge,
   Button,
@@ -33,7 +11,6 @@ import {
   ErrorBanner,
   Field,
   Input,
-  Label,
   Loading,
   Modal,
   PageHeader,
@@ -43,10 +20,39 @@ import {
   Td,
   Th,
 } from "@/components/om/primitives";
+import { Attachments } from "@/components/om/Attachments";
 import { OrderManagePanel } from "@/components/purchasing/OrderManagePanel";
+import { ReturnsTab } from "@/components/purchasing/ReturnsTab";
 import { errorMessage, useApi, useApiMutation } from "@/lib/api/query";
 import { fmtDate, fmtMoney, humanize, num, today } from "@/lib/format";
 import type { Account, AgingReport, VendorBill } from "@/lib/api/types";
+
+type Tab = "orders" | "bills" | "returns" | "payables";
+
+export default function PurchasingPage() {
+  const [tab, setTab] = useState<Tab>("orders");
+  const { data: me } = useMe();
+  const canWrite = !!me && (me.permissions.includes("*") || me.permissions.includes("purchasing.write"));
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Purchasing & Payables" description="Purchase orders, goods receipts, supplier bills, returns, expenses and payments." />
+      <Tabs<Tab>
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: "orders", label: "Purchase orders" },
+          { key: "bills", label: "Bills & expenses" },
+          { key: "returns", label: "Returns to suppliers" },
+          { key: "payables", label: "Payables aging" },
+        ]}
+      />
+      {tab === "orders" && <OrdersTab canWrite={canWrite} />}
+      {tab === "bills" && <BillsTab canWrite={canWrite} />}
+      {tab === "returns" && <ReturnsTab canWrite={canWrite} />}
+      {tab === "payables" && <PayablesTab />}
+    </div>
+  );
+}
 
 const STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
   draft: "neutral",
@@ -57,81 +63,95 @@ const STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> 
   posted: "warning",
 };
 
-function OrdersTab() {
+function OrdersTab({ canWrite }: { canWrite: boolean }) {
   const { data: orders, isLoading } = usePurchaseOrders();
   const { data: parties } = useParties();
   const { data: products } = useProducts();
   const createOrder = useCreatePurchaseOrder();
 
+  const blankLine = { product_id: "", qty: "1", unit_cost: "" };
   const [showForm, setShowForm] = useState(false);
   const [partyId, setPartyId] = useState("");
-  const [productId, setProductId] = useState("");
-  const [qty, setQty] = useState("1");
-  const [unitCost, setUnitCost] = useState("0");
+  const [expected, setExpected] = useState("");
+  const [lines, setLines] = useState([blankLine]);
+  const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const vendors = parties?.filter((p) => p.kind === "vendor" || p.kind === "both") ?? [];
+  const setLine = (i: number, patch: Partial<typeof blankLine>) => setLines(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  const orderTotal = lines.reduce((sum, l) => sum + num(l.qty) * num(l.unit_cost), 0);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await createOrder.mutateAsync({
-      party_id: partyId,
-      lines: [{ product_id: productId, qty_ordered: qty, unit_cost: unitCost }],
-    });
-    setShowForm(false);
+    setError(null);
+    const payload = lines.filter((l) => l.product_id && num(l.qty) > 0);
+    if (!payload.length) return setError("Add at least one product and quantity.");
+    try {
+      await createOrder.mutateAsync({
+        party_id: partyId,
+        expected_date: expected || null,
+        lines: payload.map((l) => ({ product_id: l.product_id, qty_ordered: l.qty, unit_cost: l.unit_cost || "0" })),
+      });
+      setShowForm(false);
+      setLines([blankLine]);
+      setPartyId("");
+      setExpected("");
+    } catch (err) {
+      setError(errorMessage(err));
+    }
   }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500">PO → receive goods at actual cost → bill → pay.</p>
-        <Button onClick={() => setShowForm((v) => !v)}>{showForm ? "Cancel" : "New PO"}</Button>
+        <p className="text-sm text-slate-500">Order → receive goods at actual cost → bill → pay.</p>
+        {canWrite && <Button onClick={() => { setError(null); setShowForm(true); }}><Plus /> New purchase order</Button>}
       </div>
 
-      {showForm && (
-        <Card className="p-6">
-          <form onSubmit={onSubmit} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <Label>Vendor</Label>
-              <Select required value={partyId} onChange={(e) => setPartyId(e.target.value)}>
-                <option value="">Select a vendor…</option>
-                {vendors.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </Select>
+      <Modal open={showForm} onClose={() => setShowForm(false)} title="New purchase order" wide>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="sm:col-span-2">
+              <Field label="Supplier">
+                <Select required value={partyId} onChange={(e) => setPartyId(e.target.value)}>
+                  <option value="">Select a supplier…</option>
+                  {vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </Select>
+              </Field>
             </div>
-            <div>
-              <Label>Product</Label>
-              <Select required value={productId} onChange={(e) => setProductId(e.target.value)}>
-                <option value="">Select a product…</option>
-                {products?.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.sku} — {p.name}
-                  </option>
-                ))}
-              </Select>
+            <Field label="Expected on (optional)"><Input type="date" value={expected} onChange={(e) => setExpected(e.target.value)} /></Field>
+          </div>
+          {!vendors.length && <p className="text-xs text-amber-600">Add a supplier under Customers & Suppliers before creating a purchase order.</p>}
+          <div className="space-y-2">
+            <div className="hidden grid-cols-12 gap-2 px-1 text-xs font-medium text-slate-500 sm:grid">
+              <span className="col-span-6">Product</span><span className="col-span-2">Qty</span><span className="col-span-3">Unit cost (before VAT)</span>
             </div>
-            <div>
-              <Label>Quantity ordered</Label>
-              <Input type="number" min="1" step="1" value={qty} onChange={(e) => setQty(e.target.value)} />
-            </div>
-            <div>
-              <Label>Unit cost</Label>
-              <Input type="number" step="0.01" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} />
-            </div>
-            <div className="flex items-end">
-              <Button type="submit" disabled={createOrder.isPending || !vendors.length}>
-                {createOrder.isPending ? "Saving…" : "Create PO"}
-              </Button>
-            </div>
-          </form>
-          {!vendors.length && (
-            <p className="mt-3 text-xs text-amber-600">Add a vendor in CRM before creating a purchase order.</p>
-          )}
-        </Card>
-      )}
+            {lines.map((line, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2">
+                <div className="col-span-12 sm:col-span-6">
+                  <Select aria-label="Product" value={line.product_id} onChange={(e) => {
+                    const product = products?.find((p) => p.id === e.target.value);
+                    setLine(i, { product_id: e.target.value, unit_cost: product && num(product.avg_cost) ? num(product.avg_cost).toFixed(2) : line.unit_cost });
+                  }}>
+                    <option value="">Select a product…</option>
+                    {products?.filter((p) => p.is_active).map((p) => <option key={p.id} value={p.id}>{p.sku} — {p.name}</option>)}
+                  </Select>
+                </div>
+                <div className="col-span-5 sm:col-span-2"><Input type="number" min="0" step="any" aria-label="Quantity" value={line.qty} onChange={(e) => setLine(i, { qty: e.target.value })} /></div>
+                <div className="col-span-6 sm:col-span-3"><Input type="number" min="0" step="0.01" placeholder="0.00" aria-label="Unit cost" value={line.unit_cost} onChange={(e) => setLine(i, { unit_cost: e.target.value })} /></div>
+                <button type="button" aria-label="Remove line" className="col-span-1 text-slate-400 hover:text-red-600" onClick={() => setLines(lines.length > 1 ? lines.filter((_, j) => j !== i) : lines)}>✕</button>
+              </div>
+            ))}
+            <Button type="button" variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => setLines([...lines, blankLine])}>+ Add another product</Button>
+          </div>
+          <p className="flex justify-end gap-3 text-sm font-semibold"><span>Order total</span><span className="tabular-nums">{fmtMoney(orderTotal)}</span></p>
+          <ErrorBanner message={error} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>Cancel</Button>
+            <Button type="submit" disabled={createOrder.isPending || !vendors.length}>{createOrder.isPending ? "Saving…" : "Create purchase order"}</Button>
+          </div>
+        </form>
+      </Modal>
 
       <div>
         <h2 className="mb-2 text-sm font-semibold text-slate-500 dark:text-slate-400">Purchase orders</h2>
@@ -199,7 +219,7 @@ const BILL_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = 
   void: "danger",
 };
 
-function BillsTab() {
+function BillsTab({ canWrite }: { canWrite: boolean }) {
   const { data: bills, isLoading } = useVendorBills();
   const { data: parties } = useParties();
   const { data: me } = useMe();
@@ -209,6 +229,7 @@ function BillsTab() {
   const pay = useApiMutation("post", "/purchasing/vendor-bills/payments", [["purchasing"], ["accounting"]]);
   const [showNew, setShowNew] = useState(false);
   const [paying, setPaying] = useState<VendorBill | null>(null);
+  const [filesFor, setFilesFor] = useState<VendorBill | null>(null);
   const [error, setError] = useState<string | null>(null);
   const vendors = parties?.filter((p) => p.kind === "vendor" || p.kind === "both") ?? [];
   const expenseAccounts = accounts?.filter((a) => a.is_active && (a.type === "expense" || a.type === "asset")) ?? [];
@@ -237,7 +258,7 @@ function BillsTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">Bills from purchase orders appear here; record rent, utilities and other expenses directly.</p>
-        <Button onClick={() => setShowNew(true)}>New expense bill</Button>
+        {canWrite && <Button onClick={() => setShowNew(true)}><Plus /> New expense bill</Button>}
       </div>
       <ErrorBanner message={!showNew && !paying ? error : null} />
       <Card>
@@ -259,9 +280,12 @@ function BillsTab() {
                   <Td className="tabular-nums">{fmtMoney(b.total)}</Td>
                   <Td><Badge tone={BILL_TONE[b.status] ?? "neutral"}>{humanize(b.status)}</Badge></Td>
                   <Td>
-                    {(b.status === "posted" || b.status === "partially_paid") && (
-                      <Button className="px-2 py-1 text-xs" onClick={() => { setPaying(b); setAmount(""); }}>Pay</Button>
-                    )}
+                    <div className="flex justify-end gap-1">
+                      <Button variant="secondary" className="px-2 py-1 text-xs" aria-label={`Files for ${b.bill_no}`} onClick={() => setFilesFor(b)}><Paperclip /> Files</Button>
+                      {canWrite && (b.status === "posted" || b.status === "partially_paid") && (
+                        <Button className="px-2 py-1 text-xs" onClick={() => { setPaying(b); setAmount(""); }}>Pay</Button>
+                      )}
+                    </div>
                   </Td>
                 </tr>
               ))}
@@ -314,6 +338,15 @@ function BillsTab() {
           <ErrorBanner message={error} />
           <div className="flex justify-end"><Button type="submit" disabled={create.isPending}>Record bill</Button></div>
         </form>
+      </Modal>
+
+      <Modal open={!!filesFor} onClose={() => setFilesFor(null)} title={`${filesFor?.bill_no ?? "Bill"} — files`}>
+        {filesFor && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-500">Keep the supplier&apos;s own invoice or delivery note with the bill — it is what KRA asks for when you claim the VAT.</p>
+            <Attachments entityType="vendor_bill" entityId={filesFor.id} canWrite={canWrite} />
+          </div>
+        )}
       </Modal>
 
       <Modal open={!!paying} onClose={() => setPaying(null)} title={`Pay ${paying?.bill_no ?? "bill"}`}>

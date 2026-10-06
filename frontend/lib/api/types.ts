@@ -23,6 +23,7 @@ export interface Branding {
   mpesa_till: string;
   default_payment_terms_days: number;
   invoice_terms: string;
+  prices_include_tax: boolean;
 }
 
 export interface Me {
@@ -71,6 +72,7 @@ export interface Product {
   avg_cost: string;
   low_stock_threshold: string;
   is_active: boolean;
+  image_url: string | null;
 }
 
 export interface Warehouse {
@@ -596,6 +598,7 @@ export interface ValuationRow {
   retail_value: string;
   low_stock_threshold: string;
   status: "ok" | "low" | "out";
+  image_url: string | null;
   locations: { warehouse_id: string; warehouse: string; qty: string }[];
 }
 
@@ -660,4 +663,103 @@ export interface CrmTask {
   title: string;
   due_date: string | null;
   done: boolean;
+}
+
+export interface StockCountSummary {
+  id: string;
+  count_no: string;
+  warehouse_id: string;
+  status: "draft" | "posted" | "cancelled";
+  note: string;
+  created_at: string;
+  posted_at: string | null;
+  variance_value: string;
+}
+
+export interface StockCountLine {
+  id: string;
+  product_id: string;
+  sku: string;
+  name: string;
+  category: string;
+  unit: string;
+  system_qty: string;
+  counted_qty: string | null;
+  variance: string | null;
+  variance_value: string | null;
+}
+
+export interface StockCountDetail extends StockCountSummary {
+  counted: number;
+  total: number;
+  lines: StockCountLine[];
+}
+
+export interface ReorderRow {
+  product_id: string;
+  sku: string;
+  name: string;
+  category: string;
+  unit: string;
+  on_hand: string;
+  reorder_level: string;
+  suggested_qty: string;
+  last_cost: string;
+}
+
+export interface DebitNote {
+  id: string;
+  debit_note_no: string;
+  vendor_bill_id: string;
+  party_id: string;
+  note_date: string;
+  reason: string;
+  subtotal: string;
+  tax_total: string;
+  total: string;
+}
+
+export interface RecurringInvoice {
+  id: string;
+  party_id: string;
+  name: string;
+  frequency: "weekly" | "monthly" | "quarterly" | "yearly";
+  next_date: string;
+  end_date: string | null;
+  is_active: boolean;
+  reference: string;
+  invoices_raised: number;
+  last_invoice_id: string | null;
+  email_to_customer: boolean;
+  lines: { description?: string; qty: string; unit_price: string; tax_rate?: string }[];
+}
+
+export interface Attachment {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  created_at: string;
+}
+
+export interface MpesaConfig {
+  configured: boolean;
+  is_active: boolean;
+  environment?: "sandbox" | "production";
+  shortcode?: string;
+  till_number?: string;
+  consumer_key?: string;
+  consumer_secret?: string;
+  passkey?: string;
+  callback_base?: string;
+}
+
+export interface MpesaRequest {
+  id: string;
+  status: "pending" | "success" | "failed";
+  phone: string;
+  amount: string;
+  mpesa_receipt: string | null;
+  result_desc: string;
+  invoice_id: string | null;
 }

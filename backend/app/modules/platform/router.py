@@ -152,6 +152,14 @@ async def serve_logo(filename: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
+@router.get("/media/products/{filename}")
+async def serve_product_image(filename: str):
+    path = media.local_image_path(f"/api/v1/media/products/{filename}")
+    if path is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "image not found")
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 # ----------------------------------------------------------------- team
 
 
@@ -286,3 +294,58 @@ async def activity_log(
         {"id": r.id, "at": r.created_at, "user": r.user_email, "action": r.action, "area": r.area, "via_support": r.via_support}
         for r in rows
     ]
+
+
+# ------------------------------------------------------------ attachments
+
+
+@router.get("/attachments")
+async def list_attachments(
+    entity_type: str, entity_id: str, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)
+):
+    from app.core.attachments import AttachmentService
+
+    return [
+        {"id": a.id, "filename": a.filename, "content_type": a.content_type, "size": a.size, "created_at": a.created_at}
+        for a in await AttachmentService(session, actor.workspace_id).list(entity_type, entity_id)
+    ]
+
+
+@router.post("/attachments")
+async def upload_attachment(
+    entity_type: str,
+    entity_id: str,
+    file: UploadFile,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    from app.core.attachments import AttachmentService
+
+    if "*" not in actor.permissions and not any(p.endswith(".write") for p in actor.permissions):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "your role can't add files")
+    a = await AttachmentService(session, actor.workspace_id).add(entity_type, entity_id, file, actor.user_id)
+    return {"id": a.id, "filename": a.filename, "content_type": a.content_type, "size": a.size, "created_at": a.created_at}
+
+
+@router.get("/attachments/{attachment_id}/download")
+async def download_attachment(attachment_id: str, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.core.attachments import AttachmentService
+
+    attachment, path = await AttachmentService(session, actor.workspace_id).path(attachment_id)
+    return FileResponse(
+        path,
+        media_type=attachment.content_type,
+        filename=attachment.filename,
+        # "nosniff": the browser must not second-guess the type we chose.
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store"},
+    )
+
+
+@router.delete("/attachments/{attachment_id}")
+async def delete_attachment(attachment_id: str, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.core.attachments import AttachmentService
+
+    if "*" not in actor.permissions and not any(p.endswith(".write") for p in actor.permissions):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "your role can't remove files")
+    await AttachmentService(session, actor.workspace_id).delete(attachment_id)
+    return {"ok": True}

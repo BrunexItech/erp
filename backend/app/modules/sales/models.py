@@ -4,7 +4,7 @@ import enum
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Numeric, String, func
+from sqlalchemy import JSON, ForeignKey, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import TenantModel
@@ -96,6 +96,10 @@ class Invoice(TenantModel):
     etims_reference: Mapped[str] = mapped_column(String(64), default="")
     etims_qr: Mapped[str] = mapped_column(String(500), default="")
     etims_error: Mapped[str] = mapped_column(String(300), default="")
+    # Set by a till for each sale it rings up. If the same sale is sent twice
+    # (a retry after a dropped connection, or an offline sale syncing), the
+    # second attempt returns the first invoice instead of selling it again.
+    client_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class InvoiceLine(TenantModel):
@@ -210,3 +214,64 @@ class ArPaymentEntry(TenantModel):
     document_no: Mapped[str] = mapped_column(String(32), default="")  # INV-/CN-/RCT- number
     reference: Mapped[str] = mapped_column(String(64), default="")  # M-Pesa code, cheque no, ...
     credit_note_id: Mapped[str | None] = mapped_column(ForeignKey("credit_notes.id"), nullable=True)
+
+
+class RecurringFrequency(str, enum.Enum):
+    weekly = "weekly"
+    monthly = "monthly"
+    quarterly = "quarterly"
+    yearly = "yearly"
+
+
+class RecurringInvoice(TenantModel):
+    """A template that raises the same invoice on a schedule — rent, a
+    retainer, a monthly service contract."""
+
+    __tablename__ = "recurring_invoices"
+
+    party_id: Mapped[str] = mapped_column(ForeignKey("parties.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    frequency: Mapped[RecurringFrequency] = mapped_column(default=RecurringFrequency.monthly)
+    next_date: Mapped[date]
+    end_date: Mapped[date | None] = mapped_column(nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    reference: Mapped[str] = mapped_column(String(64), default="")
+    notes: Mapped[str] = mapped_column(String(2000), default="")
+    prices_include_tax: Mapped[bool] = mapped_column(default=False)
+    lines: Mapped[list] = mapped_column(JSON, default=list)  # DocumentLineInput dicts
+    invoices_raised: Mapped[int] = mapped_column(default=0)
+    last_invoice_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    email_to_customer: Mapped[bool] = mapped_column(default=False)
+
+
+class MpesaConfig(TenantModel):
+    """A business's own Safaricom Daraja credentials, so money goes straight
+    to their paybill/till. Secrets are stored encrypted (core/crypto.py)."""
+
+    __tablename__ = "mpesa_configs"
+
+    environment: Mapped[str] = mapped_column(String(16), default="sandbox")  # sandbox | production
+    shortcode: Mapped[str] = mapped_column(String(20), default="")  # paybill, or the store number for a till
+    till_number: Mapped[str] = mapped_column(String(20), default="")  # set for Buy Goods (till) accounts
+    consumer_key_enc: Mapped[str] = mapped_column(String(500), default="")
+    consumer_secret_enc: Mapped[str] = mapped_column(String(500), default="")
+    passkey_enc: Mapped[str] = mapped_column(String(500), default="")
+    is_active: Mapped[bool] = mapped_column(default=False)
+
+
+class MpesaRequest(TenantModel):
+    """One STK push ("pay now" prompt on the customer's phone) and its outcome."""
+
+    __tablename__ = "mpesa_requests"
+
+    invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True, index=True)
+    phone: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    account_reference: Mapped[str] = mapped_column(String(32), default="")
+    checkout_request_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    merchant_request_id: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | success | failed
+    result_desc: Mapped[str] = mapped_column(String(300), default="")
+    mpesa_receipt: Mapped[str] = mapped_column(String(32), default="")
+    callback_token_hash: Mapped[str] = mapped_column(String(64), index=True)
+    requested_by: Mapped[str] = mapped_column(String(36), default="")

@@ -125,6 +125,7 @@ class BrandingUpdate(BaseModel):
     brand_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     invoice_template: str | None = Field(default=None, pattern=r"^(modern|bold|classic)$")
     etims_mode: str | None = Field(default=None, pattern=r"^(off|test|live)$")
+    prices_include_tax: bool | None = None
     bank_details: str | None = None
     mpesa_paybill: str | None = None
     mpesa_till: str | None = None
@@ -146,6 +147,7 @@ class BrandingOut(BaseModel):
     brand_color: str
     invoice_template: str
     etims_mode: str
+    prices_include_tax: bool
     bank_details: str
     mpesa_paybill: str
     mpesa_till: str

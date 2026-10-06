@@ -42,6 +42,7 @@ class ProductOut(BaseModel):
     category: str
     description: str
     unit: str
+    image_url: str | None = None
     valuation_method: ValuationMethod
     sale_price: Decimal
     tax_rate: Decimal
@@ -124,3 +125,18 @@ class StockTransferOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class StockCountCreate(BaseModel):
+    warehouse_id: str
+    category: str | None = None  # count one category only
+    note: str = ""
+
+
+class StockCountEntry(BaseModel):
+    line_id: str
+    counted_qty: Decimal | None = Field(default=None, ge=0)  # None clears the count
+
+
+class StockCountSave(BaseModel):
+    lines: list[StockCountEntry]

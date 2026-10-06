@@ -42,6 +42,7 @@ def register_subscribers() -> None:
     events.subscribe(events.AssetDisposed, _on_asset_disposed)
     events.subscribe(events.InvoiceVoided, _on_invoice_voided)
     events.subscribe(events.ProductionCompleted, _on_production_completed)
+    events.subscribe(events.VendorReturnPosted, _on_vendor_return_posted)
     _registered = True
 
 
@@ -355,4 +356,26 @@ async def _on_production_completed(event: events.ProductionCompleted, session: A
             JournalLineInput("INVENTORY", debit=amount),
             JournalLineInput("PRODUCTION_COSTS_APPLIED", credit=amount),
         ],
+    )
+
+
+async def _on_vendor_return_posted(event: events.VendorReturnPosted, session: AsyncSession) -> None:
+    svc = AccountingService(session, event.workspace_id)
+    subtotal, tax, total, cost = _d(event.subtotal), _d(event.tax_total), _d(event.total), _d(event.stock_cost)
+    lines = [
+        JournalLineInput("AP", debit=total),
+        JournalLineInput("INVENTORY", credit=cost),
+        JournalLineInput("INPUT_VAT", credit=tax),  # VAT claimed on the purchase is given back
+    ]
+    variance = subtotal - cost  # credited more (or less) than the goods were carried at
+    if variance > 0:
+        lines.append(JournalLineInput("PURCHASE_PRICE_VARIANCE", credit=variance))
+    elif variance < 0:
+        lines.append(JournalLineInput("PURCHASE_PRICE_VARIANCE", debit=-variance))
+    await svc.post_journal_entry(
+        entry_date=event.entry_date,
+        memo=f"Return to supplier {event.debit_note_id[:8]}",
+        source_type="vendor_return",
+        source_id=event.debit_note_id,
+        lines=lines,
     )

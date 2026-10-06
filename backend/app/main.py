@@ -49,6 +49,26 @@ app.include_router(assets_router, dependencies=[Depends(require_feature("assets"
 app.include_router(manufacturing_router, dependencies=[Depends(require_feature("manufacturing"))])
 
 
+@app.post("/api/v1/mpesa/callback/{workspace_id}/{token}", include_in_schema=False)
+async def mpesa_callback(workspace_id: str, token: str, payload: dict):
+    """Safaricom posts STK results here. No sign-in (Safaricom can't send
+    one): the long random token in the address is what proves the call is
+    about a request we made. Always answers "accepted" so Safaricom doesn't
+    retry forever; anything that doesn't match a pending request is ignored."""
+    import logging
+
+    from app.core.db import SessionLocal, set_tenant_context
+    from app.modules.sales.mpesa import MpesaService
+
+    try:
+        async with SessionLocal() as session:
+            await set_tenant_context(session, workspace_id)
+            await MpesaService(session, workspace_id).handle_callback(token, payload)
+    except Exception:
+        logging.getLogger("erp").exception("M-Pesa callback failed")
+    return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+
 @app.get("/health")
 async def health():
     """Liveness: the process is up."""

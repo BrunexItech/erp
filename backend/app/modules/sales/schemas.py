@@ -99,6 +99,7 @@ class InvoiceCreate(BaseModel):
     terms: str | None = None
     lines: list[DocumentLineInput] | None = None
     warehouse_id: str | None = None
+    prices_include_tax: bool | None = None  # None = the workspace's setting
     subtotal: Decimal | None = None
     tax_total: Decimal = Decimal("0")
 
@@ -164,6 +165,7 @@ class QuoteCreate(BaseModel):
     reference: str = ""
     notes: str = ""
     terms: str | None = None
+    prices_include_tax: bool | None = None
     lines: list[DocumentLineInput] = Field(min_length=1)
 
 
@@ -251,6 +253,9 @@ class PosCheckoutRequest(BaseModel):
     payment_method: str = "cash"
     payment_reference: str = ""  # M-Pesa confirmation code, card slip no.
     amount_tendered: Decimal | None = None  # cash handed over; change is computed
+    prices_include_tax: bool | None = None  # None = the workspace's setting
+    client_ref: str | None = Field(default=None, max_length=64)  # idempotency key from the till
+    sold_at: datetime | None = None  # when it was rung up, if synced later from an offline till
     lines: list[PosCheckoutLine] = Field(min_length=1)
 
 
@@ -283,3 +288,51 @@ class EmailDocumentResult(BaseModel):
     to: str
     delivered: bool  # False = email isn't configured; the message was saved to the outbox
     backend: str
+
+
+class RecurringInvoiceCreate(BaseModel):
+    party_id: str
+    name: str = Field(min_length=1, max_length=200)
+    frequency: str = Field(default="monthly", pattern="^(weekly|monthly|quarterly|yearly)$")
+    next_date: date
+    end_date: date | None = None
+    reference: str = ""
+    notes: str = ""
+    prices_include_tax: bool | None = None
+    email_to_customer: bool = False
+    lines: list[DocumentLineInput] = Field(min_length=1)
+
+
+class RecurringInvoiceOut(BaseModel):
+    id: str
+    party_id: str
+    name: str
+    frequency: str
+    next_date: date
+    end_date: date | None
+    is_active: bool
+    reference: str
+    invoices_raised: int
+    last_invoice_id: str | None
+    email_to_customer: bool
+    lines: list
+
+    class Config:
+        from_attributes = True
+
+
+class MpesaConfigUpdate(BaseModel):
+    environment: str | None = Field(default=None, pattern="^(sandbox|production)$")
+    shortcode: str | None = None
+    till_number: str | None = None
+    consumer_key: str | None = None  # blank = keep the stored one
+    consumer_secret: str | None = None
+    passkey: str | None = None
+    is_active: bool | None = None
+
+
+class StkPushRequest(BaseModel):
+    phone: str
+    amount: Decimal = Field(gt=0)
+    invoice_id: str | None = None
+    reference: str = ""

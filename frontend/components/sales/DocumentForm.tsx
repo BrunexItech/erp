@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button, ErrorBanner, Field, Input, Modal, Select, Textarea } from "@/components/om/primitives";
 import { errorMessage, useApiMutation } from "@/lib/api/query";
-import { useParties, useProducts, useWarehouses } from "@/lib/api/hooks";
+import { useBranding, useParties, useProducts, useWarehouses } from "@/lib/api/hooks";
 import { today } from "@/lib/format";
 import { emptyLine, LineDraft, LineItemsEditor, toPayloadLines } from "./LineItemsEditor";
 
@@ -24,6 +24,8 @@ export function DocumentFormModal({
   const { data: parties } = useParties();
   const { data: products } = useProducts();
   const { data: warehouses } = useWarehouses();
+  const { data: branding } = useBranding();
+  const inclusive = !!branding?.prices_include_tax;
   const create = useApiMutation<Record<string, unknown>, { id: string }>(
     "post",
     kind === "invoice" ? "/sales/invoices" : "/sales/quotes",
@@ -114,7 +116,8 @@ export function DocumentFormModal({
           )}
         </div>
 
-        <LineItemsEditor lines={lines} onChange={setLines} products={products ?? []} currency={currency} />
+        <LineItemsEditor lines={lines} onChange={setLines} products={products ?? []} currency={currency} inclusive={inclusive} />
+        {inclusive && <p className="-mt-2 text-xs text-slate-500">Prices you type include VAT — change this under Settings → Company & documents.</p>}
 
         <Field label="Notes (printed on the document)">
           <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} />

@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   Banknote,
   BarChart3,
+  CloudUpload,
   CreditCard,
   Download,
   Maximize,
@@ -20,11 +22,15 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useBranding, useMe, useParties, usePosCheckout, useProducts, useWarehouses, useWarehouseStock } from "@/lib/api/hooks";
+import { useQueryClient } from "@tanstack/react-query";
+import { useBranding, useMe, useParties, useProducts, useWarehouses, useWarehouseStock } from "@/lib/api/hooks";
+import { http, mediaUrl } from "@/lib/api/http";
 import { errorMessage, useApi } from "@/lib/api/query";
 import { fmtMoney, num, today } from "@/lib/format";
+import { isConnectionError, loadCatalog, newClientRef, saveCatalog, usePosQueue, type QueuedSale } from "@/lib/pos/offlineQueue";
 import { session } from "@/lib/session";
-import type { Product } from "@/lib/api/types";
+import type { Branding, MpesaConfig, Party, PosReceipt, Product, Warehouse, WarehouseStock } from "@/lib/api/types";
+import { MpesaPrompt } from "@/components/sales/MpesaPrompt";
 import { Receipt, ReceiptData } from "@/components/pos/Receipt";
 
 interface CartLine {
@@ -56,15 +62,24 @@ export default function PosTerminal() {
     if (!session.isAuthenticated()) router.replace("/login");
   }, [router]);
 
+  const qc = useQueryClient();
   const { data: me } = useMe();
-  const { data: branding } = useBranding();
-  const { data: products } = useProducts();
-  const { data: warehouses } = useWarehouses();
-  const { data: parties } = useParties();
-  const checkout = usePosCheckout();
-
   const [tillId, setTillId] = useState("");
-  const { data: tillStock } = useWarehouseStock(tillId || undefined);
+  // Live data when there is a connection; otherwise the copy this till last saw,
+  // so it can keep selling (and even restart) while the internet is down.
+  const branding = useRemembered<Branding>("branding", useBranding().data);
+  const products = useRemembered<Product[]>("products", useProducts().data);
+  const warehouses = useRemembered<Warehouse[]>("warehouses", useWarehouses().data);
+  const parties = useRemembered<Party[]>("parties", useParties().data);
+  const tillStock = useRemembered<WarehouseStock[]>(tillId ? `stock.${tillId}` : null, useWarehouseStock(tillId || undefined).data);
+  const { data: mpesa } = useApi<MpesaConfig>("/sales/mpesa/config");
+  const [busy, setBusy] = useState(false);
+  const refreshAfterSale = useCallback(() => {
+    for (const key of [["sales"], ["inventory"], ["accounting"], ["crm", "parties"]]) qc.invalidateQueries({ queryKey: key });
+  }, [qc]);
+  const offline = usePosQueue(session.getWorkspaceId() ?? undefined, refreshAfterSale);
+  const [showQueue, setShowQueue] = useState(false);
+  const inclusive = !!branding?.prices_include_tax;
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customerId, setCustomerId] = useState("");
   const [search, setSearch] = useState("");
@@ -115,7 +130,15 @@ export default function PosTerminal() {
     if (!tillId && warehouses?.length === 1) setTillId(warehouses[0].id);
   }, [warehouses, tillId]);
 
-  const stockAtTill = useMemo(() => new Map((tillStock ?? []).map((s) => [s.product_id, num(s.qty)])), [tillStock]);
+  // What the server last reported, less anything sold here that it hasn't heard about yet.
+  const stockAtTill = useMemo(() => {
+    const stock = new Map((tillStock ?? []).map((s) => [s.product_id, num(s.qty)]));
+    for (const sale of offline.queue) {
+      if (sale.payload.warehouse_id !== tillId) continue;
+      for (const line of sale.payload.lines as { product_id: string; qty: string }[]) stock.set(line.product_id, (stock.get(line.product_id) ?? 0) - num(line.qty));
+    }
+    return stock;
+  }, [tillStock, offline.queue, tillId]);
   const till = warehouses?.find((w) => w.id === tillId);
   const customers = (parties ?? []).filter((p) => p.kind === "customer" || p.kind === "both");
 
@@ -131,12 +154,20 @@ export default function PosTerminal() {
     let subtotal = 0;
     let tax = 0;
     for (const l of cart) {
-      const net = round2(l.qty * l.price);
-      subtotal += net;
-      tax += round2(net * num(l.product.tax_rate));
+      const amount = round2(l.qty * l.price);
+      const rate = num(l.product.tax_rate);
+      if (inclusive && rate) {
+        // Shelf prices already contain VAT: take it out, don't add it on.
+        const lineTax = round2((amount * rate) / (1 + rate));
+        subtotal += amount - lineTax;
+        tax += lineTax;
+      } else {
+        subtotal += amount;
+        tax += round2(amount * rate);
+      }
     }
-    return { subtotal, tax, total: subtotal + tax, items: cart.reduce((s, l) => s + l.qty, 0) };
-  }, [cart]);
+    return { subtotal: round2(subtotal), tax: round2(tax), total: round2(subtotal + tax), items: cart.reduce((s, l) => s + l.qty, 0) };
+  }, [cart, inclusive]);
 
   const focusScan = useCallback(() => setTimeout(() => scanRef.current?.focus(), 0), []);
 
@@ -184,14 +215,14 @@ export default function PosTerminal() {
     }
   }
 
-  const canCharge = cart.length > 0 && !!tillId && online;
+  const canCharge = cart.length > 0 && !!tillId;
 
   // F2 = scan box, F9 = pay, Esc = close dialogs.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "F2") { e.preventDefault(); focusScan(); }
       if (e.key === "F9" && canCharge && !receipt) { e.preventDefault(); setPaying(true); }
-      if (e.key === "Escape") { setPaying(false); setShowSummary(false); }
+      if (e.key === "Escape") { setPaying(false); setShowSummary(false); setShowQueue(false); }
       if (e.key === "Enter" && receipt && !paying) { e.preventDefault(); newSale(); }
     };
     window.addEventListener("keydown", onKey);
@@ -199,29 +230,57 @@ export default function PosTerminal() {
   });
 
   async function completeSale(method: Method, tendered: number | null, reference: string) {
-    const lines = cart.map((l) => ({
-      product_id: l.product.id,
-      qty: String(l.qty),
-      unit_price: String(l.price),
-      tax_rate: l.product.tax_rate,
-    }));
-    const result = await checkout.mutateAsync({
+    if (busy) return;
+    const clientRef = newClientRef(tillId);
+    const soldAt = new Date().toISOString();
+    const payload = {
       warehouse_id: tillId,
       party_id: customerId || null,
       payment_method: method,
       payment_reference: reference,
       amount_tendered: tendered !== null ? tendered.toFixed(2) : null,
-      lines,
-    });
-    const data: ReceiptData = {
-      ...result,
+      prices_include_tax: inclusive,
+      client_ref: clientRef,
+      sold_at: soldAt,
+      lines: cart.map((l) => ({ product_id: l.product.id, qty: String(l.qty), unit_price: String(l.price), tax_rate: l.product.tax_rate })),
+    };
+    const shown = {
       lines: cart.map((l) => ({ name: l.product.name, qty: l.qty, price: l.price, total: round2(l.qty * l.price) })),
       customer: customers.find((c) => c.id === customerId)?.name,
       till: till?.name,
     };
-    setReceipt(data);
-    setPaying(false);
-    if (autoPrint) setTimeout(() => window.print(), 250);
+    setBusy(true);
+    try {
+      let result: PosReceipt | null = null;
+      if (navigator.onLine) {
+        try {
+          result = await http.post<PosReceipt>("/sales/pos/checkout", payload);
+        } catch (err) {
+          if (!isConnectionError(err)) throw err; // the server said no — show the cashier why
+        }
+      }
+      if (result) {
+        setReceipt({ ...result, ...shown });
+        refreshAfterSale();
+      } else {
+        // No connection: keep the sale on this till and send it later.
+        const sale: QueuedSale = {
+          client_ref: clientRef, workspace_id: session.getWorkspaceId() ?? "", payload, total: totals.total, items: totals.items, queued_at: soldAt,
+        };
+        if (!offline.enqueue(sale)) throw new Error("This till has no connection and its storage is full, so the sale could not be saved. Reconnect and try again.");
+        const paid = tendered ?? totals.total;
+        setReceipt({
+          ...shown,
+          receipt_no: "", invoice_no: "", issued_at: soldAt, pending_ref: clientRef.slice(-8).toUpperCase(),
+          subtotal: totals.subtotal.toFixed(2), tax_total: totals.tax.toFixed(2), total: totals.total.toFixed(2),
+          payment_method: method, payment_reference: reference, amount_tendered: paid.toFixed(2), change_due: Math.max(0, paid - totals.total).toFixed(2),
+        });
+      }
+      setPaying(false);
+      if (autoPrint) setTimeout(() => window.print(), 250);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function newSale() {
@@ -256,7 +315,16 @@ export default function PosTerminal() {
             {online ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
             {online ? "Online" : "Offline"}
           </span>
-          <TopButton title="Till summary (cash-up)" onClick={() => setShowSummary(true)} disabled={!tillId}><BarChart3 /></TopButton>
+          {offline.queue.length > 0 && (
+            <button
+              onClick={() => setShowQueue(true)}
+              className={`mr-1 flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${offline.queue.some((q) => q.error) ? "bg-red-500/20 text-red-200" : "bg-amber-500/20 text-amber-200"}`}
+            >
+              {offline.queue.some((q) => q.error) ? <AlertTriangle className="h-3.5 w-3.5" /> : <CloudUpload className="h-3.5 w-3.5" />}
+              {offline.queue.length} waiting to send
+            </button>
+          )}
+          <TopButton title="Till summary (cash-up)" onClick={() => setShowSummary(true)} disabled={!tillId || !online}><BarChart3 /></TopButton>
           <TopButton
             title={autoPrint ? "Auto-print receipts: ON" : "Auto-print receipts: OFF"}
             onClick={() => { const v = !autoPrint; setAutoPrint(v); store(AUTOPRINT_KEY, v ? "1" : "0"); }}
@@ -275,8 +343,8 @@ export default function PosTerminal() {
       </header>
 
       {!online && (
-        <div className="bg-red-600 px-4 py-1.5 text-center text-sm text-white print:hidden">
-          No connection — sales are paused so stock and the books stay correct. Reconnect to continue.
+        <div className="bg-amber-500 px-4 py-1.5 text-center text-sm font-medium text-navy-950 print:hidden">
+          No connection — keep selling. Sales are saved on this till and sent automatically when the connection returns.
         </div>
       )}
 
@@ -332,9 +400,14 @@ export default function PosTerminal() {
                     className="group flex flex-col rounded-2xl bg-white p-3 text-left shadow-card ring-1 ring-slate-200/70 transition active:scale-[0.98] enabled:hover:-translate-y-0.5 enabled:hover:shadow-lift enabled:hover:ring-brand/40 disabled:opacity-45"
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <span className={`flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold text-white ${TILE_COLORS[i % TILE_COLORS.length]}`}>
-                        {p.name.slice(0, 2).toUpperCase()}
-                      </span>
+                      {p.image_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={mediaUrl(p.image_url) ?? ""} alt="" loading="lazy" className="h-12 w-12 rounded-xl object-cover ring-1 ring-slate-200" />
+                      ) : (
+                        <span className={`flex h-12 w-12 items-center justify-center rounded-xl text-sm font-semibold text-white ${TILE_COLORS[i % TILE_COLORS.length]}`}>
+                          {p.name.slice(0, 2).toUpperCase()}
+                        </span>
+                      )}
                       <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${out ? "bg-red-50 text-red-600" : stock <= num(p.low_stock_threshold) ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"}`}>
                         {out ? "Out" : `${stock} left`}
                       </span>
@@ -402,8 +475,8 @@ export default function PosTerminal() {
               {customers.filter((c) => c.name !== "Walk-in Customer").map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
             <div className="space-y-1 text-sm">
-              <div className="flex justify-between text-slate-500"><span>Subtotal</span><span className="tabular-nums">{fmtMoney(totals.subtotal)}</span></div>
-              <div className="flex justify-between text-slate-500"><span>VAT</span><span className="tabular-nums">{fmtMoney(totals.tax)}</span></div>
+              <div className="flex justify-between text-slate-500"><span>{inclusive ? "Before VAT" : "Subtotal"}</span><span className="tabular-nums">{fmtMoney(totals.subtotal)}</span></div>
+              <div className="flex justify-between text-slate-500"><span>{inclusive ? "VAT (included)" : "VAT"}</span><span className="tabular-nums">{fmtMoney(totals.tax)}</span></div>
               <div className="flex items-end justify-between pt-1">
                 <span className="text-base font-semibold">Total</span>
                 <span className="text-3xl font-bold tracking-tight tabular-nums">{fmtMoney(totals.total)}</span>
@@ -425,7 +498,9 @@ export default function PosTerminal() {
         <PaymentDialog
           total={round2(totals.total)}
           currency={branding?.currency}
-          busy={checkout.isPending}
+          busy={busy}
+          canPrompt={online && !!mpesa?.configured && !!mpesa.is_active}
+          customerPhone={customers.find((c) => c.id === customerId)?.phone ?? ""}
           onCancel={() => { setPaying(false); focusScan(); }}
           onComplete={completeSale}
         />
@@ -434,8 +509,8 @@ export default function PosTerminal() {
       {receipt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/60 p-4 backdrop-blur-sm print:static print:block print:bg-white print:p-0">
           <div className="flex max-h-full w-full max-w-md flex-col overflow-hidden rounded-3xl bg-white shadow-lift print:max-w-none print:rounded-none print:shadow-none">
-            <div className="bg-emerald-600 px-6 py-5 text-center text-white print:hidden">
-              <p className="text-sm opacity-90">Sale complete</p>
+            <div className={`px-6 py-5 text-center text-white print:hidden ${receipt.pending_ref ? "bg-amber-600" : "bg-emerald-600"}`}>
+              <p className="text-sm opacity-90">{receipt.pending_ref ? "Sale saved on this till — it will be sent when the connection returns" : "Sale complete"}</p>
               {num(receipt.change_due) > 0 ? (
                 <p className="mt-1 text-3xl font-bold">Change {fmtMoney(receipt.change_due)}</p>
               ) : (
@@ -455,6 +530,17 @@ export default function PosTerminal() {
             </div>
           </div>
         </div>
+      )}
+
+      {showQueue && (
+        <QueueDialog
+          queue={offline.queue}
+          syncing={offline.syncing}
+          online={online}
+          onSync={offline.sync}
+          onDiscard={offline.discard}
+          onClose={() => { setShowQueue(false); focusScan(); }}
+        />
       )}
 
       {showSummary && tillId && <TillSummary tillId={tillId} tillName={till?.name ?? ""} onClose={() => { setShowSummary(false); focusScan(); }} />}
@@ -486,18 +572,23 @@ function PaymentDialog({
   total,
   currency,
   busy,
+  canPrompt,
+  customerPhone,
   onCancel,
   onComplete,
 }: {
   total: number;
   currency?: string;
   busy: boolean;
+  canPrompt: boolean;
+  customerPhone: string;
   onCancel: () => void;
   onComplete: (method: Method, tendered: number | null, reference: string) => Promise<void>;
 }) {
   const [method, setMethod] = useState<Method>("cash");
   const [tendered, setTendered] = useState(String(total));
   const [reference, setReference] = useState("");
+  const [prompting, setPrompting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const change = num(tendered) - total;
   const quick = Array.from(new Set([total, Math.ceil(total / 50) * 50, Math.ceil(total / 100) * 100, ...[500, 1000, 2000, 5000].filter((n) => n > total)])).slice(0, 5);
@@ -522,7 +613,7 @@ function PaymentDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/60 p-4 backdrop-blur-sm" onClick={onCancel}>
-      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-lift">
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-lift">
         <div className="flex items-start justify-between">
           <div>
             <p className="text-sm text-slate-500">Amount due</p>
@@ -536,7 +627,7 @@ function PaymentDialog({
             <button
               key={key}
               type="button"
-              onClick={() => setMethod(key)}
+              onClick={() => { setMethod(key); setPrompting(false); setError(null); }}
               className={`flex flex-col items-center gap-1.5 rounded-2xl py-4 text-sm font-medium ring-1 transition ${
                 method === key ? "bg-brand-50 text-brand ring-2 ring-brand" : "text-slate-600 ring-slate-200 hover:bg-slate-50"
               }`}
@@ -547,6 +638,18 @@ function PaymentDialog({
           ))}
         </div>
 
+        {method === "mpesa" && prompting ? (
+          <div className="mt-6">
+            <MpesaPrompt
+              amount={total}
+              reference="POS"
+              defaultPhone={customerPhone}
+              onPaid={(code) => { onComplete("mpesa", null, code).catch((err) => { setPrompting(false); setReference(code); setError(errorMessage(err)); }); }}
+              onCancel={() => setPrompting(false)}
+            />
+          </div>
+        ) : (
+        <form onSubmit={submit}>
         {method === "cash" ? (
           <div className="mt-6">
             <label className="text-sm font-medium text-slate-600">Cash received</label>
@@ -581,6 +684,11 @@ function PaymentDialog({
               className="mt-1 h-14 w-full rounded-2xl px-4 font-mono text-xl tracking-wider ring-1 ring-slate-200 focus:outline-none focus:ring-2 focus:ring-brand"
             />
             <p className="mt-2 text-xs text-slate-500">Recorded on the receipt and in the till summary so you can match your M-Pesa statement.</p>
+            {method === "mpesa" && canPrompt && (
+              <button type="button" onClick={() => { setError(null); setPrompting(true); }} className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-2xl font-medium text-brand ring-1 ring-brand/40 hover:bg-brand-50">
+                <Smartphone className="h-4 w-4" /> Send a payment prompt to the customer&apos;s phone instead
+              </button>
+            )}
           </div>
         )}
 
@@ -593,7 +701,81 @@ function PaymentDialog({
         >
           {busy ? "Processing…" : `Complete sale`}
         </button>
-      </form>
+        </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Live data when we have it, else what this till saw last time. */
+function useRemembered<T>(part: string | null, live: T | undefined): T | undefined {
+  const [saved, setSaved] = useState<T | undefined>(undefined);
+  useEffect(() => {
+    if (!part) return;
+    if (live !== undefined) saveCatalog(part, live);
+    else setSaved(loadCatalog<T>(part));
+  }, [part, live]);
+  return live ?? (part ? saved : undefined);
+}
+
+function QueueDialog({
+  queue,
+  syncing,
+  online,
+  onSync,
+  onDiscard,
+  onClose,
+}: {
+  queue: QueuedSale[];
+  syncing: boolean;
+  online: boolean;
+  onSync: () => void;
+  onDiscard: (clientRef: string) => void;
+  onClose: () => void;
+}) {
+  const when = (iso: string) => new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/60 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="flex max-h-full w-full max-w-lg flex-col rounded-3xl bg-white p-6 shadow-lift">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-lg font-semibold">Sales waiting to be sent</p>
+            <p className="text-sm text-slate-500">Rung up while this till had no connection. They are sent in order as soon as it returns.</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100" aria-label="Close"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="mt-4 min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto">
+          {queue.map((sale) => (
+            <div key={sale.client_ref} className="py-3">
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span><span className="font-mono font-medium">{sale.client_ref.slice(-8).toUpperCase()}</span> <span className="text-slate-400">· {when(sale.queued_at)} · {sale.items} item{sale.items === 1 ? "" : "s"}</span></span>
+                <span className="font-semibold tabular-nums">{fmtMoney(sale.total)}</span>
+              </div>
+              {sale.error && (
+                <div className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">
+                  <p>The server did not accept this sale: {sale.error}</p>
+                  <p className="mt-1 text-xs">Fix the cause (for example, receive the missing stock) and send again — or, if the sale should not be recorded, remove it.</p>
+                  <button
+                    onClick={() => window.confirm("Remove this sale? It will NOT be recorded, although the customer has paid. Only do this if you have recorded it another way.") && onDiscard(sale.client_ref)}
+                    className="mt-2 rounded-lg px-2 py-1 text-xs font-medium text-red-700 ring-1 ring-red-200 hover:bg-red-100"
+                  >
+                    Remove this sale
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {!queue.length && <p className="py-8 text-center text-sm text-slate-400">Everything has been sent.</p>}
+        </div>
+        <button
+          onClick={onSync}
+          disabled={!online || syncing || !queue.length}
+          className="mt-4 flex h-12 items-center justify-center gap-2 rounded-2xl bg-brand font-semibold text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          <CloudUpload className="h-4 w-4" /> {syncing ? "Sending…" : online ? "Send now" : "Waiting for a connection"}
+        </button>
+      </div>
     </div>
   );
 }

@@ -3,7 +3,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.actor import Actor, get_actor, get_tenant_session, require_feature
+from app.core.actor import Actor, get_actor, get_tenant_session, require_feature, require_permission
 from app.modules.sales.models import ArPaymentEntry, ArPaymentEntryType, CreditNote, Invoice, SalesOrderLine
 from app.modules.sales.schemas import (
     CreditNoteCreate,
@@ -15,6 +15,7 @@ from app.modules.sales.schemas import (
     InvoiceCreate,
     InvoiceDetailOut,
     InvoiceOut,
+    MpesaConfigUpdate,
     PaymentOut,
     PosCheckoutRequest,
     PosReceiptOut,
@@ -23,9 +24,12 @@ from app.modules.sales.schemas import (
     QuoteDetailOut,
     QuoteOut,
     QuoteStatusUpdate,
+    RecurringInvoiceCreate,
+    RecurringInvoiceOut,
     SalesOrderCreate,
     SalesOrderLineOut,
     SalesOrderOut,
+    StkPushRequest,
     VoidRequest,
 )
 from app.modules.sales.service import SalesService
@@ -334,6 +338,47 @@ async def download_quote_pdf(
     return _pdf(await service.quote_pdf(quote_id), (quote.quote_no if quote else "") or f"quote-{quote_id[:8]}")
 
 
+# --------------------------------------------------------------- recurring
+
+
+@router.get("/recurring", response_model=list[RecurringInvoiceOut])
+async def list_recurring(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.core.db import TenantRepository
+    from app.modules.sales.models import RecurringInvoice
+
+    templates = await TenantRepository(session, actor.workspace_id, RecurringInvoice).list()
+    return sorted(templates, key=lambda t: (not t.is_active, t.next_date))
+
+
+@router.post("/recurring", response_model=RecurringInvoiceOut)
+async def create_recurring(
+    payload: RecurringInvoiceCreate, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)
+):
+    return await SalesService(session, actor.workspace_id).create_recurring(payload)
+
+
+@router.post("/recurring/run")
+async def run_recurring(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    invoices = await SalesService(session, actor.workspace_id).run_recurring(sent_by=actor.user_id)
+    return {"raised": len(invoices), "invoice_numbers": [i.invoice_no for i in invoices]}
+
+
+@router.post("/recurring/{template_id}/toggle", response_model=RecurringInvoiceOut)
+async def toggle_recurring(template_id: str, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from fastapi import HTTPException
+
+    from app.core.db import TenantRepository
+    from app.modules.sales.models import RecurringInvoice
+
+    template = await TenantRepository(session, actor.workspace_id, RecurringInvoice).get(template_id)
+    if template is None:
+        raise HTTPException(404, "recurring invoice not found")
+    template.is_active = not template.is_active
+    await session.commit()
+    await session.refresh(template)
+    return template
+
+
 # --------------------------------------------------------------------- POS
 
 
@@ -438,3 +483,51 @@ async def sales_summary(
     end = end or date.today()
     start = start or date(end.year, end.month, 1)
     return await SalesService(session, actor.workspace_id).sales_summary(start, end)
+
+
+# ------------------------------------------------------------------ M-Pesa
+
+
+def _mpesa_view(request) -> dict:
+    return {
+        "id": request.id, "status": request.status, "phone": request.phone, "amount": request.amount,
+        "mpesa_receipt": request.mpesa_receipt, "result_desc": request.result_desc, "invoice_id": request.invoice_id,
+    }
+
+
+@router.get("/mpesa/config")
+async def mpesa_config(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.modules.sales.mpesa import MpesaService
+
+    view = await MpesaService(session, actor.workspace_id).config_view()
+    if "*" not in actor.permissions:
+        # Everyone at the till needs to know whether prompts are available;
+        # only owners/admins see the account details.
+        return {"configured": view["configured"], "is_active": view["is_active"]}
+    return view
+
+
+@router.put("/mpesa/config")
+async def save_mpesa_config(
+    payload: MpesaConfigUpdate, actor: Actor = Depends(require_permission("*")), session: AsyncSession = Depends(get_tenant_session)
+):
+    from app.modules.sales.mpesa import MpesaService
+
+    return await MpesaService(session, actor.workspace_id).save_config(payload.model_dump())
+
+
+@router.post("/mpesa/stk")
+async def mpesa_stk_push(payload: StkPushRequest, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.modules.sales.mpesa import MpesaService
+
+    request = await MpesaService(session, actor.workspace_id).initiate(
+        phone=payload.phone, amount=payload.amount, invoice_id=payload.invoice_id, reference=payload.reference, user_id=actor.user_id
+    )
+    return _mpesa_view(request)
+
+
+@router.get("/mpesa/requests/{request_id}")
+async def mpesa_request_status(request_id: str, actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.modules.sales.mpesa import MpesaService
+
+    return _mpesa_view(await MpesaService(session, actor.workspace_id).status_of(request_id))

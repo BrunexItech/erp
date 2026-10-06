@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useBranding, useMe, useUpdateBranding } from "@/lib/api/hooks";
-import { Button, Card, ErrorBanner, Field, Input, PageHeader, Select, Tabs, Textarea } from "@/components/om/primitives";
+import { Button, Card, ErrorBanner, Field, Input, PageHeader, Select, Switch, Tabs, Textarea } from "@/components/om/primitives";
+import { PaymentsTab } from "@/components/settings/PaymentsTab";
 import { SecurityTab } from "@/components/settings/SecurityTab";
 import { TeamTab } from "@/components/settings/TeamTab";
 import { errorMessage } from "@/lib/api/query";
@@ -14,7 +15,7 @@ import type { Branding } from "@/lib/api/types";
 
 type Form = Omit<Branding, "logo_url"> & { logo_url: string };
 
-type Tab = "company" | "team" | "billing" | "activity" | "security";
+type Tab = "company" | "payments" | "team" | "billing" | "activity" | "security";
 
 export default function SettingsPage() {
   const { data: me } = useMe();
@@ -23,7 +24,7 @@ export default function SettingsPage() {
   // Deep link from the "Pay now" banner: /dashboard/settings?tab=billing
   useEffect(() => {
     const wanted = new URLSearchParams(window.location.search).get("tab");
-    if (wanted === "billing" || wanted === "team" || wanted === "security" || wanted === "activity") setTab(wanted);
+    if (wanted === "billing" || wanted === "team" || wanted === "security" || wanted === "activity" || wanted === "payments") setTab(wanted);
   }, []);
   const active: Tab = tab ?? (isAdmin ? "company" : "security");
   return (
@@ -33,13 +34,14 @@ export default function SettingsPage() {
         value={active}
         onChange={setTab}
         tabs={[
-          ...(isAdmin ? [{ key: "company" as Tab, label: "Company & documents" }] : []),
+          ...(isAdmin ? [{ key: "company" as Tab, label: "Company & documents" }, { key: "payments" as Tab, label: "M-Pesa" }] : []),
           { key: "team" as Tab, label: "Team" },
           ...(isAdmin ? [{ key: "billing" as Tab, label: "Plan & billing" }, { key: "activity" as Tab, label: "Activity log" }] : []),
           { key: "security" as Tab, label: "Security" },
         ]}
       />
       {active === "company" && <CompanyTab />}
+      {active === "payments" && <PaymentsTab />}
       {active === "team" && <TeamTab />}
       {active === "billing" && <BillingPanel />}
       {active === "activity" && <ActivityTab />}
@@ -142,7 +144,13 @@ function CompanyTab() {
               </Select>
             </Field>
             <Field label="Default payment terms (days)"><Input type="number" min="0" max="365" {...bind("default_payment_terms_days")} /></Field>
-            <div />
+            <div className="flex items-start gap-3 rounded-xl bg-slate-50 p-3 dark:bg-navy-900">
+              <Switch checked={!!form.prices_include_tax} onChange={(v) => setForm({ ...form, prices_include_tax: v })} label="Prices include VAT" />
+              <div>
+                <p className="text-sm font-medium">Prices include VAT</p>
+                <p className="text-xs text-slate-500">{form.prices_include_tax ? "The price you type is what the customer pays — VAT is worked out from inside it (usual for shops)." : "VAT is added on top of the price you type (usual for business-to-business)."}</p>
+              </div>
+            </div>
             <Field label="M-Pesa Paybill" hint="Invoice number is printed as the account"><Input {...bind("mpesa_paybill")} /></Field>
             <Field label="M-Pesa Till (Buy Goods)"><Input {...bind("mpesa_till")} /></Field>
           </div>

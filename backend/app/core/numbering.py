@@ -32,6 +32,8 @@ DEFAULT_PREFIXES: dict[str, str] = {
     "asset": "FA",
     "work_order": "WO",
     "receipt": "RCT",
+    "stock_count": "SC",
+    "debit_note": "DN",
 }
 
 

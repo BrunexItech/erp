@@ -23,6 +23,8 @@ export interface ReceiptData {
   customer?: string;
   till?: string;
   cashier?: string;
+  /** Set for a sale rung up with no connection: it has no receipt number yet. */
+  pending_ref?: string;
 }
 
 const METHOD = { cash: "Cash", mpesa: "M-Pesa", card: "Card" } as Record<string, string>;
@@ -46,8 +48,17 @@ export function Receipt({ data, branding }: { data: ReceiptData; branding?: Bran
         {branding?.tax_pin && <p>PIN: {branding.tax_pin}</p>}
       </div>
       <Divider />
-      <Row left={`Receipt: ${data.receipt_no}`} right={when.toLocaleDateString("en-GB")} />
-      <Row left={`Invoice: ${data.invoice_no}`} right={when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} />
+      {data.pending_ref ? (
+        <>
+          <Row left={`Sale ref: ${data.pending_ref}`} right={when.toLocaleDateString("en-GB")} />
+          <Row left="Recorded offline" right={when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} />
+        </>
+      ) : (
+        <>
+          <Row left={`Receipt: ${data.receipt_no}`} right={when.toLocaleDateString("en-GB")} />
+          <Row left={`Invoice: ${data.invoice_no}`} right={when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} />
+        </>
+      )}
       {data.till && <Row left={`Till: ${data.till}`} right={data.cashier ?? ""} />}
       {data.customer && data.customer !== "Walk-in Customer" && <p>Customer: {data.customer}</p>}
       <Divider />
@@ -58,7 +69,7 @@ export function Receipt({ data, branding }: { data: ReceiptData; branding?: Bran
         </div>
       ))}
       <Divider />
-      <Row left="Subtotal" right={fmtMoney(data.subtotal)} />
+      <Row left="Before VAT" right={fmtMoney(data.subtotal)} />
       <Row left="VAT" right={fmtMoney(data.tax_total)} />
       <div className="my-1 flex justify-between text-[14px] font-bold">
         <span>TOTAL</span>

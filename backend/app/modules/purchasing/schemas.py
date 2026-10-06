@@ -92,3 +92,18 @@ class VendorPaymentCreate(BaseModel):
     amount: Decimal
     method: str = ""
     payment_date: date | None = None
+
+
+class VendorReturnLine(BaseModel):
+    product_id: str
+    qty: Decimal
+    unit_price: Decimal  # credit per unit, before VAT
+
+
+class VendorReturnCreate(BaseModel):
+    vendor_bill_id: str
+    warehouse_id: str  # where the goods leave from
+    note_date: date | None = None
+    reason: str = ""
+    tax_rate: Decimal = Decimal("0")  # VAT rate on the original purchase, e.g. 0.16
+    lines: list[VendorReturnLine]

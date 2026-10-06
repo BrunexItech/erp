@@ -104,3 +104,30 @@ class ApPaymentEntry(TenantModel):
     type: Mapped[ApPaymentEntryType]
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))  # always positive
     method: Mapped[str] = mapped_column(String(32), default="")
+
+
+class DebitNote(TenantModel):
+    """Goods returned to a supplier (or a credit they agreed), reducing what
+    is owed on a bill."""
+
+    __tablename__ = "debit_notes"
+
+    debit_note_no: Mapped[str] = mapped_column(String(32), index=True)
+    vendor_bill_id: Mapped[str] = mapped_column(ForeignKey("vendor_bills.id"), index=True)
+    party_id: Mapped[str] = mapped_column(ForeignKey("parties.id"), index=True)
+    note_date: Mapped[date]
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    warehouse_id: Mapped[str | None] = mapped_column(ForeignKey("warehouses.id"), nullable=True)
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    tax_total: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+    total: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)
+
+
+class DebitNoteLine(TenantModel):
+    __tablename__ = "debit_note_lines"
+
+    debit_note_id: Mapped[str] = mapped_column(ForeignKey("debit_notes.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"))
+    qty: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 6))  # what the supplier credits per unit
+    stock_cost: Mapped[Decimal] = mapped_column(Numeric(18, 6))  # value that left inventory

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import ForeignKey, Identity, Index, Numeric, String, UniqueConstraint
@@ -23,6 +24,7 @@ class Product(TenantModel):
     category: Mapped[str] = mapped_column(String(80), default="", index=True)
     description: Mapped[str] = mapped_column(String(1000), default="")
     unit: Mapped[str] = mapped_column(String(16), default="pcs")  # pcs, kg, m, box…
+    image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     valuation_method: Mapped[ValuationMethod] = mapped_column(
         default=ValuationMethod.weighted_average
     )
@@ -61,6 +63,7 @@ class StockMovementType(str, enum.Enum):
     transfer = "transfer"
     production_issue = "production_issue"  # component consumed by a work order
     production_receipt = "production_receipt"  # finished good produced by a work order
+    purchase_return = "purchase_return"  # goods sent back to a supplier
 
 
 class StockMovement(TenantModel):
@@ -160,3 +163,34 @@ class StockLayer(TenantModel):
     __table_args__ = (
         Index("ix_stock_layers_fifo_order", "product_id", "warehouse_id", "seq"),
     )
+
+
+class StockCountStatus(str, enum.Enum):
+    draft = "draft"
+    posted = "posted"
+    cancelled = "cancelled"
+
+
+class StockCount(TenantModel):
+    """A physical stock take of one location. Counting happens on a draft
+    sheet; posting it writes an adjustment for every line where the count
+    differs from the system."""
+
+    __tablename__ = "stock_counts"
+
+    count_no: Mapped[str] = mapped_column(String(32), index=True)
+    warehouse_id: Mapped[str] = mapped_column(ForeignKey("warehouses.id"), index=True)
+    status: Mapped[StockCountStatus] = mapped_column(default=StockCountStatus.draft)
+    note: Mapped[str] = mapped_column(String(500), default="")
+    posted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    variance_value: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0)  # set on posting
+
+
+class StockCountLine(TenantModel):
+    __tablename__ = "stock_count_lines"
+
+    count_id: Mapped[str] = mapped_column(ForeignKey("stock_counts.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"))
+    system_qty: Mapped[Decimal] = mapped_column(Numeric(18, 4))  # what the system showed when the sheet was made
+    counted_qty: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)  # None = not counted yet
+    adjusted_qty: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=0)  # what posting actually changed

@@ -225,3 +225,18 @@ class ProductionCompleted:
 class YearClosed:
     workspace_id: str
     year: int
+
+
+@dataclass(frozen=True)
+class VendorReturnPosted:
+    """Goods sent back to a supplier. AP falls by the credit the supplier
+    gives; Inventory falls by what the goods were carried at; the difference
+    is a price variance."""
+
+    workspace_id: str
+    debit_note_id: str
+    subtotal: float  # credit from the supplier, before VAT
+    tax_total: float
+    total: float
+    stock_cost: float  # value that left inventory
+    entry_date: date

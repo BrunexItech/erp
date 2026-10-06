@@ -24,8 +24,10 @@ export const emptyLine = (): LineDraft => ({
 
 const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
 
-/** Mirrors backend compute_lines(): round each line, then sum. */
-export function lineTotals(lines: LineDraft[]) {
+/** Mirrors backend compute_lines(): round each line, then sum. With
+ * `inclusive` the typed price already contains VAT, so VAT is taken out of the
+ * line instead of added on top. */
+export function lineTotals(lines: LineDraft[], inclusive = false) {
   let subtotal = 0;
   let discount = 0;
   let tax = 0;
@@ -33,9 +35,17 @@ export function lineTotals(lines: LineDraft[]) {
     const gross = num(l.qty) * num(l.unit_price);
     const disc = round2((gross * num(l.discount_pct)) / 100);
     const net = round2(gross) - disc;
-    subtotal += net;
-    discount += disc;
-    tax += round2((net * num(l.tax_rate)) / 100);
+    const rate = num(l.tax_rate) / 100;
+    if (inclusive && rate) {
+      const lineTax = round2((net * rate) / (1 + rate));
+      subtotal += net - lineTax;
+      discount += round2(disc / (1 + rate));
+      tax += lineTax;
+    } else {
+      subtotal += net;
+      discount += disc;
+      tax += round2(net * rate);
+    }
   }
   return { subtotal, discount, tax, total: subtotal + tax };
 }
@@ -58,11 +68,13 @@ export function LineItemsEditor({
   onChange,
   products,
   currency,
+  inclusive = false,
 }: {
   lines: LineDraft[];
   onChange: (lines: LineDraft[]) => void;
   products: Product[];
   currency?: string;
+  inclusive?: boolean;
 }) {
   const update = (i: number, patch: Partial<LineDraft>) =>
     onChange(lines.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
@@ -77,7 +89,7 @@ export function LineItemsEditor({
     });
   }
 
-  const totals = lineTotals(lines);
+  const totals = lineTotals(lines, inclusive);
 
   return (
     <div className="space-y-3">
@@ -85,7 +97,7 @@ export function LineItemsEditor({
         <span className="col-span-3">Product</span>
         <span className="col-span-3">Description</span>
         <span className="col-span-1">Qty</span>
-        <span className="col-span-2">Unit price</span>
+        <span className="col-span-2">{inclusive ? "Unit price (incl. VAT)" : "Unit price"}</span>
         <span className="col-span-1">Disc %</span>
         <span className="col-span-1">VAT %</span>
         <span className="col-span-1 text-right">Amount</span>
@@ -140,7 +152,7 @@ export function LineItemsEditor({
         + Add line
       </Button>
       <div className="ml-auto w-full max-w-xs space-y-1 text-sm">
-        <Row label="Subtotal" value={fmtMoney(totals.subtotal + totals.discount)} />
+        <Row label={inclusive ? "Subtotal (before VAT)" : "Subtotal"} value={fmtMoney(totals.subtotal + totals.discount)} />
         {totals.discount > 0 && <Row label="Discount" value={`-${fmtMoney(totals.discount)}`} />}
         <Row label="VAT" value={fmtMoney(totals.tax)} />
         <div className="border-t border-slate-200 pt-1 dark:border-navy-700">

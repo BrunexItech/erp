@@ -144,6 +144,7 @@ class InventoryService:
                     "is_active": p.is_active, "qty": p.stock_qty, "unit_cost": unit_cost, "value": value,
                     "sale_price": p.sale_price, "retail_value": p.stock_qty * p.sale_price,
                     "low_stock_threshold": p.low_stock_threshold, "status": status_label,
+                    "image_url": p.image_url,
                     "locations": [
                         {"warehouse_id": s.warehouse_id, "warehouse": warehouses[s.warehouse_id].name if s.warehouse_id in warehouses else "", "qty": s.qty}
                         for s in by_product.get(p.id, []) if s.qty
@@ -357,3 +358,148 @@ class InventoryService:
         await self.session.commit()
         await self.session.refresh(transfer)
         return transfer
+
+    # ------------------------------------------------------------ stock take
+
+    async def start_count(self, warehouse_id: str, category: str | None, note: str):
+        from app.core.numbering import next_number
+        from app.modules.inventory.models import StockCount, StockCountLine
+
+        if await self.warehouses.get(warehouse_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "warehouse not found")
+        products = [p for p in await self.products.list(Product.is_active.is_(True)) if not category or p.category == category]
+        if not products:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "no active products to count")
+        on_hand = {s.product_id: s.qty for s in await self.warehouse_stock.list(WarehouseStock.warehouse_id == warehouse_id)}
+
+        count = StockCount(
+            workspace_id=self.workspace_id,
+            count_no=await next_number(self.session, self.workspace_id, "stock_count"),
+            warehouse_id=warehouse_id,
+            note=note,
+        )
+        self.session.add(count)
+        await self.session.flush()
+        for product in sorted(products, key=lambda p: (p.category, p.name)):
+            self.session.add(
+                StockCountLine(workspace_id=self.workspace_id, count_id=count.id, product_id=product.id, system_qty=on_hand.get(product.id, Decimal("0")))
+            )
+        await self.session.commit()
+        await self.session.refresh(count)
+        return count
+
+    async def _count(self, count_id: str, *, lock: bool = False):
+        from app.modules.inventory.models import StockCount
+
+        repo = TenantRepository(self.session, self.workspace_id, StockCount)
+        count = await (repo.get_for_update(count_id) if lock else repo.get(count_id))
+        if count is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "stock count not found")
+        return count
+
+    async def count_detail(self, count_id: str) -> dict:
+        from app.modules.inventory.models import StockCountLine
+
+        count = await self._count(count_id)
+        lines = await TenantRepository(self.session, self.workspace_id, StockCountLine).list(StockCountLine.count_id == count.id)
+        products = {p.id: p for p in await self.products.list()}
+        rows = []
+        for line in lines:
+            product = products.get(line.product_id)
+            variance = (line.counted_qty - line.system_qty) if line.counted_qty is not None else None
+            rows.append(
+                {
+                    "id": line.id, "product_id": line.product_id, "sku": product.sku if product else "", "name": product.name if product else "",
+                    "category": product.category if product else "", "unit": product.unit if product else "",
+                    "system_qty": line.system_qty, "counted_qty": line.counted_qty, "variance": variance,
+                    "variance_value": (variance * product.avg_cost) if variance is not None and product else None,
+                }
+            )
+        rows.sort(key=lambda r: (r["category"], r["name"]))
+        return {
+            "id": count.id, "count_no": count.count_no, "warehouse_id": count.warehouse_id, "status": count.status.value,
+            "note": count.note, "created_at": count.created_at, "posted_at": count.posted_at, "variance_value": count.variance_value,
+            "counted": sum(1 for r in rows if r["counted_qty"] is not None), "total": len(rows), "lines": rows,
+        }
+
+    async def save_count(self, count_id: str, entries: list) -> None:
+        from app.modules.inventory.models import StockCountLine, StockCountStatus
+
+        count = await self._count(count_id, lock=True)
+        if count.status != StockCountStatus.draft:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"this count is {count.status.value}")
+        lines = {l.id: l for l in await TenantRepository(self.session, self.workspace_id, StockCountLine).list(StockCountLine.count_id == count.id)}
+        for entry in entries:
+            line = lines.get(entry.line_id)
+            if line is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "count line not found")
+            line.counted_qty = entry.counted_qty
+        await self.session.commit()
+
+    async def post_count(self, count_id: str) -> dict:
+        """Adjusts stock to what was counted. The difference is measured
+        against stock *now*, not the snapshot on the sheet, so sales made
+        between printing the sheet and posting it aren't mistaken for losses."""
+        from datetime import datetime, timezone
+
+        from app.modules.inventory.models import StockCountLine, StockCountStatus
+
+        count = await self._count(count_id, lock=True)
+        if count.status != StockCountStatus.draft:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"this count is {count.status.value}")
+        lines = await TenantRepository(self.session, self.workspace_id, StockCountLine).list(StockCountLine.count_id == count.id)
+        counted = [l for l in lines if l.counted_qty is not None]
+        if not counted:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "enter at least one counted quantity first")
+
+        variance_value = Decimal("0")
+        adjusted = 0
+        for line in sorted(counted, key=lambda l: l.product_id):
+            stock = await self._get_or_create_warehouse_stock_locked(line.product_id, count.warehouse_id)
+            delta = line.counted_qty - stock.qty
+            if delta == 0:
+                continue
+            product = await self.products.get(line.product_id)
+            movement = await self.apply_movement(
+                product_id=line.product_id,
+                warehouse_id=count.warehouse_id,
+                type=StockMovementType.adjustment,
+                qty_delta=delta,
+                unit_cost=product.avg_cost if delta > 0 else None,
+                ref_type="stock_count",
+                ref_id=count.id,
+            )
+            line.adjusted_qty = delta
+            variance_value += delta * movement.unit_cost
+            adjusted += 1
+        count.status = StockCountStatus.posted
+        count.posted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        count.variance_value = variance_value
+        await self.session.commit()
+        return {"adjusted_lines": adjusted, "variance_value": variance_value}
+
+    async def cancel_count(self, count_id: str) -> None:
+        from app.modules.inventory.models import StockCountStatus
+
+        count = await self._count(count_id, lock=True)
+        if count.status != StockCountStatus.draft:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"this count is {count.status.value}")
+        count.status = StockCountStatus.cancelled
+        await self.session.commit()
+
+    async def reorder_report(self) -> list[dict]:
+        """Products at or below their reorder level, with a suggested quantity
+        that brings stock back to twice that level."""
+        rows = []
+        for p in await self.products.list(Product.is_active.is_(True)):
+            if p.low_stock_threshold <= 0 or p.stock_qty > p.low_stock_threshold:
+                continue
+            rows.append(
+                {
+                    "product_id": p.id, "sku": p.sku, "name": p.name, "category": p.category, "unit": p.unit,
+                    "on_hand": p.stock_qty, "reorder_level": p.low_stock_threshold,
+                    "suggested_qty": max(p.low_stock_threshold * 2 - p.stock_qty, p.low_stock_threshold),
+                    "last_cost": p.avg_cost,
+                }
+            )
+        return sorted(rows, key=lambda r: (r["on_hand"] > 0, r["name"]))

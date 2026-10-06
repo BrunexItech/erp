@@ -30,12 +30,13 @@ import {
 import { OrderManagePanel } from "@/components/sales/OrderManagePanel";
 import { DocumentFormModal } from "@/components/sales/DocumentForm";
 import { EmailDialog } from "@/components/sales/EmailDialog";
+import { RecurringTab } from "@/components/sales/RecurringTab";
 import { INVOICE_TONE, InvoiceDetailModal, isOverdue } from "@/components/sales/InvoiceDetail";
 import { errorMessage, openFile, useApi, useApiMutation } from "@/lib/api/query";
 import { fmtDate, fmtMoney, fmtQty, humanize, monthStart, num, today, yearStart } from "@/lib/format";
 import type { AgingReport, Invoice, Quote } from "@/lib/api/types";
 
-type Tab = "invoices" | "quotes" | "orders" | "receivables" | "reports";
+type Tab = "invoices" | "quotes" | "orders" | "recurring" | "receivables" | "reports";
 
 export default function SalesPage() {
   const [tab, setTab] = useState<Tab>("invoices");
@@ -52,6 +53,7 @@ export default function SalesPage() {
           { key: "invoices", label: "Invoices" },
           { key: "quotes", label: "Quotes" },
           { key: "orders", label: "Sales orders" },
+          { key: "recurring", label: "Recurring" },
           { key: "receivables", label: "Receivables" },
           { key: "reports", label: "Sales report" },
         ]}
@@ -59,6 +61,7 @@ export default function SalesPage() {
       {tab === "invoices" && <InvoicesTab currency={currency} />}
       {tab === "quotes" && <QuotesTab currency={currency} />}
       {tab === "orders" && <OrdersTab />}
+      {tab === "recurring" && <RecurringTab currency={currency} />}
       {tab === "receivables" && <ReceivablesTab currency={currency} />}
       {tab === "reports" && <ReportsTab currency={currency} />}
     </div>

@@ -4,14 +4,16 @@ from datetime import datetime
 from typing import AsyncIterator, Generic, Sequence, TypeVar
 from uuid import uuid4
 
-from sqlalchemy import ForeignKey, Select, func, select, text
+import re
+
+from sqlalchemy import ForeignKey, Select, event, func, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncAttrs,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
@@ -114,14 +116,48 @@ class TenantRepository(Generic[ModelT]):
         return obj
 
 
+TENANT_KEY = "workspace_id"
+
+
+@event.listens_for(Session, "after_begin")
+def _scope_transaction(session: Session, transaction, connection) -> None:
+    """Runs at the start of EVERY transaction on every session.
+
+    Two things have to be re-established each time, because both are
+    transaction-local and services commit several times per request:
+
+    1. Drop to the restricted application role. Row-Level Security is not
+       applied to superusers or table owners, and the login role usually is
+       one — without this, every RLS policy in the schema is silently inert.
+    2. Re-apply the tenant the session is scoped to, so the policies have a
+       workspace to compare against after a commit, not just before it.
+
+    With no tenant set, RLS-protected tables return no rows and reject writes:
+    forgetting to scope a session fails closed.
+    """
+    role = settings.db_app_role
+    if role:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", role):
+            raise RuntimeError("DB_APP_ROLE must be a plain identifier")
+        connection.execute(text(f"SET LOCAL ROLE {role}"))
+    workspace_id = session.info.get(TENANT_KEY)
+    if workspace_id:
+        connection.execute(
+            text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+            {"workspace_id": workspace_id},
+        )
+
+
 async def set_tenant_context(session: AsyncSession, workspace_id: str) -> None:
-    """Sets the Postgres session variable read by each tenant table's RLS policy.
-    Must be called within the same transaction as the queries it protects.
+    """Scopes this session to one workspace for the rest of its life: applied
+    to the transaction already in progress here, and to every later one by
+    the after_begin hook above.
 
     Uses set_config(..., is_local=true) rather than `SET LOCAL app.workspace_id = $1`
     because Postgres's SET statement doesn't accept bind parameters at the protocol
     level (asyncpg prepares every statement) — set_config is a normal function call
     and does, while still being transaction-scoped like SET LOCAL."""
+    session.info[TENANT_KEY] = workspace_id
     await session.execute(
         text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
         {"workspace_id": workspace_id},

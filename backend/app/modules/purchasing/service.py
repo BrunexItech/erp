@@ -17,6 +17,8 @@ from app.modules.inventory.service import InventoryService
 from app.modules.purchasing.models import (
     ApPaymentEntry,
     ApPaymentEntryType,
+    DebitNote,
+    DebitNoteLine,
     GoodsReceipt,
     GoodsReceiptLine,
     PurchaseOrder,
@@ -29,6 +31,7 @@ from app.modules.purchasing.schemas import (
     GoodsReceiptCreate,
     PurchaseOrderCreate,
     VendorBillCreate,
+    VendorReturnCreate,
 )
 
 
@@ -253,7 +256,7 @@ class PurchasingService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "vendor bill not found")
         if amount <= 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "payment amount must be positive")
-        outstanding = bill.total - await self._bill_paid_total(bill.id)
+        outstanding = bill.total - await self._bill_settled_total(bill.id)
         if amount > outstanding:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -270,7 +273,7 @@ class PurchasingService:
         await self.ap_entries.add(entry)
         await self.session.flush()
 
-        paid_so_far = await self._bill_paid_total(bill.id)
+        paid_so_far = await self._bill_settled_total(bill.id)
         bill.status = (
             VendorBillStatus.paid if paid_so_far >= bill.total else VendorBillStatus.partially_paid
         )
@@ -290,6 +293,85 @@ class PurchasingService:
         await self.session.commit()
         await self.session.refresh(entry)
         return entry
+
+    async def return_to_vendor(self, payload: VendorReturnCreate) -> DebitNote:
+        """Send goods back: stock leaves at its carrying cost, and the bill's
+        balance falls by the supplier's credit (plus the VAT on it) — all in
+        one transaction, so a stock shortage cancels the whole return."""
+        bill = await self.bills.get_for_update(payload.vendor_bill_id)
+        if bill is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "vendor bill not found")
+        if bill.status == VendorBillStatus.void:
+            raise HTTPException(status.HTTP_409_CONFLICT, "bill is void")
+        if not payload.lines or any(l.qty <= 0 or l.unit_price < 0 for l in payload.lines):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "each return line needs a quantity above zero")
+
+        subtotal = sum(((l.qty * l.unit_price) for l in payload.lines), Decimal("0")).quantize(Decimal("0.01"))
+        tax_total = (subtotal * payload.tax_rate).quantize(Decimal("0.01"))
+        total = subtotal + tax_total
+        outstanding = bill.total - await self._bill_settled_total(bill.id)
+        if total > outstanding:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"the return is worth {total} but only {outstanding} is still owed on this bill — "
+                f"for a bill already paid, ask the supplier for a refund and record it as money received",
+            )
+
+        note_date = payload.note_date or date.today()
+        note = DebitNote(
+            debit_note_no=await next_number(self.session, self.workspace_id, "debit_note"),
+            vendor_bill_id=bill.id, party_id=bill.party_id, note_date=note_date, reason=payload.reason,
+            warehouse_id=payload.warehouse_id, subtotal=subtotal, tax_total=tax_total, total=total,
+        )
+        notes = TenantRepository(self.session, self.workspace_id, DebitNote)
+        note_lines = TenantRepository(self.session, self.workspace_id, DebitNoteLine)
+        await notes.add(note)
+
+        stock_cost = Decimal("0")
+        for line in sorted(payload.lines, key=lambda l: l.product_id):
+            movement = await self.inventory.apply_movement(
+                product_id=line.product_id,
+                warehouse_id=payload.warehouse_id,
+                type=StockMovementType.purchase_return,
+                qty_delta=-line.qty,
+                ref_type="debit_note",
+                ref_id=note.id,
+            )
+            cost = movement.unit_cost * line.qty
+            stock_cost += cost
+            await note_lines.add(
+                DebitNoteLine(debit_note_id=note.id, product_id=line.product_id, qty=line.qty, unit_price=line.unit_price, stock_cost=cost)
+            )
+
+        await self.ap_entries.add(
+            ApPaymentEntry(party_id=bill.party_id, vendor_bill_id=bill.id, type=ApPaymentEntryType.debit_note, amount=total)
+        )
+        await self.session.flush()
+        settled = await self._bill_settled_total(bill.id)
+        if settled >= bill.total:
+            bill.status = VendorBillStatus.paid
+        elif settled > 0 and bill.status == VendorBillStatus.posted:
+            bill.status = VendorBillStatus.partially_paid
+
+        await events.publish(
+            events.VendorReturnPosted(
+                workspace_id=self.workspace_id, debit_note_id=note.id, subtotal=float(subtotal), tax_total=float(tax_total),
+                total=float(total), stock_cost=float(stock_cost.quantize(Decimal("0.01"))), entry_date=note_date,
+            ),
+            self.session,
+        )
+        await self.session.commit()
+        await self.session.refresh(note)
+        return note
+
+    async def _bill_settled_total(self, vendor_bill_id: str) -> Decimal:
+        """Payments plus debit notes against a bill."""
+        stmt = select(func.coalesce(func.sum(ApPaymentEntry.amount), 0)).where(
+            ApPaymentEntry.workspace_id == self.workspace_id,
+            ApPaymentEntry.vendor_bill_id == vendor_bill_id,
+            ApPaymentEntry.type.in_([ApPaymentEntryType.payment, ApPaymentEntryType.debit_note]),
+        )
+        return Decimal((await self.session.execute(stmt)).scalar_one())
 
     async def _bill_paid_total(self, vendor_bill_id: str) -> Decimal:
         stmt = select(func.coalesce(func.sum(ApPaymentEntry.amount), 0)).where(
@@ -355,7 +437,7 @@ class PurchasingService:
             select(ApPaymentEntry.vendor_bill_id, func.coalesce(func.sum(ApPaymentEntry.amount), 0))
             .where(
                 ApPaymentEntry.workspace_id == self.workspace_id,
-                ApPaymentEntry.type == ApPaymentEntryType.payment,
+                ApPaymentEntry.type.in_([ApPaymentEntryType.payment, ApPaymentEntryType.debit_note]),
             )
             .group_by(ApPaymentEntry.vendor_bill_id)
         )

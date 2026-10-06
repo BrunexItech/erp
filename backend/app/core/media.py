@@ -20,6 +20,9 @@ from app.core.config import settings
 LOGO_URL_PREFIX = "/api/v1/media/logos/"
 MAX_UPLOAD_BYTES = 3 * 1024 * 1024
 MAX_SIDE = 1000
+# Images served without sign-in: they appear on documents sent to customers
+# and in <img> tags. Nothing sensitive may be stored in these.
+PUBLIC_IMAGE_FOLDERS = ("logos", "products")
 
 
 def logo_dir() -> Path:
@@ -38,6 +41,30 @@ def local_logo_path(logo_url: str | None) -> Path | None:
 
 
 def save_logo(workspace_id: str, data: bytes) -> str:
+    return save_image("logos", workspace_id, data)
+
+
+def image_dir(folder: str) -> Path:
+    path = Path(settings.media_root) / folder
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def local_image_path(url: str | None) -> Path | None:
+    """Filesystem path for any image we host (/api/v1/media/<folder>/<name>)."""
+    prefix = "/api/v1/media/"
+    if not url or not url.startswith(prefix):
+        return None
+    folder, _, name = url[len(prefix):].partition("/")
+    if folder not in PUBLIC_IMAGE_FOLDERS:
+        return None
+    path = image_dir(folder) / Path(name).name
+    return path if path.is_file() else None
+
+
+def save_image(folder: str, key: str, data: bytes, max_side: int = MAX_SIDE) -> str:
+    """Validate, normalise to PNG and store under <media>/<folder>, replacing
+    any earlier image for the same key. Returns its public URL path."""
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "logo must be 3 MB or smaller")
     try:
@@ -49,19 +76,20 @@ def save_logo(workspace_id: str, data: bytes) -> str:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "upload a PNG, JPG or WebP image")
 
     image = image.convert("RGBA")
-    image.thumbnail((MAX_SIDE, MAX_SIDE))
+    image.thumbnail((max_side, max_side))
     out = BytesIO()
     image.save(out, format="PNG", optimize=True)
     png = out.getvalue()
 
     # Content hash in the name: a new logo gets a new URL, so browsers and
     # CDNs never show a stale one.
-    name = f"{workspace_id}-{hashlib.sha256(png).hexdigest()[:12]}.png"
-    for old in logo_dir().glob(f"{workspace_id}-*.png"):
+    name = f"{key}-{hashlib.sha256(png).hexdigest()[:12]}.png"
+    directory = image_dir(folder)
+    for old in directory.glob(f"{key}-*.png"):
         if old.name != name:
             old.unlink(missing_ok=True)
-    (logo_dir() / name).write_bytes(png)
-    return LOGO_URL_PREFIX + name
+    (directory / name).write_bytes(png)
+    return f"/api/v1/media/{folder}/{name}"
 
 
 def delete_logos(workspace_id: str) -> None:

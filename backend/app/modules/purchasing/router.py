@@ -13,6 +13,7 @@ from app.modules.purchasing.schemas import (
     VendorBillCreate,
     VendorBillOut,
     VendorPaymentCreate,
+    VendorReturnCreate,
 )
 from app.modules.purchasing.service import PurchasingService
 
@@ -111,3 +112,26 @@ async def ap_aging(
     session: AsyncSession = Depends(get_tenant_session),
 ):
     return await PurchasingService(session, actor.workspace_id).ap_aging(as_of)
+
+
+@router.post("/vendor-returns")
+async def return_to_vendor(
+    payload: VendorReturnCreate,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    note = await PurchasingService(session, actor.workspace_id).return_to_vendor(payload)
+    return {"id": note.id, "debit_note_no": note.debit_note_no, "total": note.total}
+
+
+@router.get("/vendor-returns")
+async def list_vendor_returns(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    from app.core.db import TenantRepository
+    from app.modules.purchasing.models import DebitNote
+
+    notes = await TenantRepository(session, actor.workspace_id, DebitNote).list()
+    return [
+        {"id": n.id, "debit_note_no": n.debit_note_no, "vendor_bill_id": n.vendor_bill_id, "party_id": n.party_id,
+         "note_date": n.note_date, "reason": n.reason, "subtotal": n.subtotal, "tax_total": n.tax_total, "total": n.total}
+        for n in sorted(notes, key=lambda n: n.created_at, reverse=True)
+    ]

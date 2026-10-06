@@ -1,8 +1,9 @@
 // Service worker for the installable POS. Keeps the till's code and assets
 // cached so it opens instantly (and shows a clear "offline" state instead of a
-// browser error page if the shop's internet drops). Sales themselves always go
-// to the server — stock and the ledger must never diverge between tills.
-const CACHE = "pos-shell-v1";
+// browser error page if the shop's internet drops). The page itself holds any
+// sales made offline and sends them when the connection returns; this worker
+// never caches or replays API calls.
+const CACHE = "pos-shell-v2";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(["/pos"])).then(() => self.skipWaiting()));

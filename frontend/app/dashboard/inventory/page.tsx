@@ -23,12 +23,16 @@ import {
   Th,
 } from "@/components/om/primitives";
 import { ImportModal } from "@/components/om/ImportModal";
+import { Attachments } from "@/components/om/Attachments";
+import { ProductImageUploader, ProductThumb } from "@/components/inventory/ProductImage";
+import { ReorderTab } from "@/components/inventory/ReorderTab";
+import { StockTakeTab } from "@/components/inventory/StockTakeTab";
 import { useBranding, useMe } from "@/lib/api/hooks";
 import { errorMessage, openFile, useApi, useApiMutation } from "@/lib/api/query";
 import { fmtDate, fmtMoney, fmtQty, humanize, num } from "@/lib/format";
 import type { Product, StockMovement, ValuationReport, ValuationRow, Warehouse } from "@/lib/api/types";
 
-type Tab = "products" | "locations" | "transfers";
+type Tab = "products" | "reorder" | "counts" | "locations" | "transfers";
 const REFRESH = [["inventory"], ["accounting"]];
 const STATUS: Record<ValuationRow["status"], { tone: "success" | "warning" | "danger"; label: string }> = {
   ok: { tone: "success", label: "In stock" },
@@ -77,12 +81,16 @@ export default function InventoryPage() {
         onChange={setTab}
         tabs={[
           { key: "products", label: "Products", count: report?.rows.length },
+          { key: "reorder", label: "Reorder", count: totals ? totals.low + totals.out : undefined },
+          { key: "counts", label: "Stock take" },
           { key: "locations", label: "Shops & warehouses", count: warehouses?.length },
           { key: "transfers", label: "Transfers" },
         ]}
       />
 
       {tab === "products" && <ProductsTab report={report} isLoading={isLoading} onOpen={setOpenId} onAdd={canWrite ? () => setShowNew(true) : undefined} />}
+      {tab === "reorder" && <ReorderTab />}
+      {tab === "counts" && <StockTakeTab warehouses={warehouses ?? []} categories={report?.categories ?? []} canWrite={canWrite} />}
       {tab === "locations" && <LocationsTab warehouses={warehouses ?? []} report={report} canWrite={canWrite} />}
       {tab === "transfers" && <TransfersTab warehouses={warehouses ?? []} report={report} canWrite={canWrite} />}
 
@@ -166,8 +174,13 @@ function ProductsTab({ report, isLoading, onOpen, onAdd }: { report?: ValuationR
                 return (
                   <tr key={r.product_id} onClick={() => onOpen(r.product_id)} className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-navy-700/40 ${r.is_active ? "" : "opacity-50"}`}>
                     <Td>
-                      <p className="font-medium">{r.name}</p>
-                      <p className="font-mono text-xs text-slate-400">{r.sku}</p>
+                      <div className="flex items-center gap-3">
+                        <ProductThumb url={r.image_url} name={r.name} />
+                        <div>
+                          <p className="font-medium">{r.name}</p>
+                          <p className="font-mono text-xs text-slate-400">{r.sku}</p>
+                        </div>
+                      </div>
                     </Td>
                     <Td className="text-slate-500">{r.category || "—"}</Td>
                     <Td>
@@ -191,6 +204,7 @@ function ProductsTab({ report, isLoading, onOpen, onAdd }: { report?: ValuationR
 }
 
 function NewProductModal({ warehouses, categories, onClose }: { warehouses: Warehouse[]; categories: string[]; onClose: () => void }) {
+  const priceLabel = usePriceLabel();
   const create = useApiMutation<Record<string, unknown>, Product>("post", "/inventory/products", REFRESH);
   const adjust = useApiMutation("post", "/inventory/stock/adjustments", REFRESH);
   const [f, setF] = useState({
@@ -237,7 +251,7 @@ function NewProductModal({ warehouses, categories, onClose }: { warehouses: Ware
           </Field>
           <Field label="Barcode"><Input {...bind("barcode")} placeholder="Scan or type" /></Field>
           <Field label="Unit"><Input {...bind("unit")} placeholder="pcs, kg, bag…" /></Field>
-          <Field label="Selling price (before VAT)"><Input type="number" step="0.01" min="0" {...bind("sale_price")} /></Field>
+          <Field label={priceLabel}><Input type="number" step="0.01" min="0" {...bind("sale_price")} /></Field>
           <Field label="VAT %"><Input type="number" step="0.01" min="0" max="100" {...bind("tax_rate")} /></Field>
           <Field label="Reorder level" hint="Flagged as low at or below this"><Input type="number" step="any" min="0" {...bind("low_stock_threshold")} /></Field>
           <Field label="Costing method" hint="Can't be changed later">
@@ -271,7 +285,7 @@ function NewProductModal({ warehouses, categories, onClose }: { warehouses: Ware
 }
 
 const MOVEMENT_LABEL: Record<string, string> = {
-  opening: "Opening stock", receipt: "Goods received", sale: "Sale", return_: "Customer return", adjustment: "Adjustment",
+  opening: "Opening stock", receipt: "Goods received", sale: "Sale", return_: "Customer return", adjustment: "Adjustment", purchase_return: "Returned to supplier",
   transfer: "Transfer", production_issue: "Used in production", production_receipt: "Produced",
 };
 
@@ -286,6 +300,7 @@ function ProductModal({ row, warehouses, categories, canWrite, onClose }: { row:
   const [adj, setAdj] = useState({ warehouse_id: warehouses[0]?.id ?? "", direction: "add", qty: "", unit_cost: "", reason: "" });
   const [error, setError] = useState<string | null>(null);
   const whNames = useMemo(() => new Map(warehouses.map((w) => [w.id, w.name])), [warehouses]);
+  const priceLabel = usePriceLabel();
 
   function startEdit() {
     if (!product) return;
@@ -311,12 +326,15 @@ function ProductModal({ row, warehouses, categories, canWrite, onClose }: { row:
     <Modal open onClose={onClose} title={row.name} wide>
       <div className="space-y-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="font-mono text-xs text-slate-400">{row.sku}{product?.barcode && ` · ${product.barcode}`}</p>
-            <div className="mt-1 flex items-center gap-2">
-              <Badge tone={STATUS[row.status].tone}>{STATUS[row.status].label}</Badge>
-              {row.category && <Badge>{row.category}</Badge>}
-              {product && <span className="text-xs text-slate-400">{product.valuation_method === "fifo" ? "FIFO costing" : "Weighted-average costing"}</span>}
+          <div className="flex items-center gap-4">
+            <ProductImageUploader productId={row.product_id} url={row.image_url} name={row.name} canWrite={canWrite} />
+            <div>
+              <p className="font-mono text-xs text-slate-400">{row.sku}{product?.barcode && ` · ${product.barcode}`}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <Badge tone={STATUS[row.status].tone}>{STATUS[row.status].label}</Badge>
+                {row.category && <Badge>{row.category}</Badge>}
+                {product && <span className="text-xs text-slate-400">{product.valuation_method === "fifo" ? "FIFO costing" : "Weighted-average costing"}</span>}
+              </div>
             </div>
           </div>
           {canWrite && view === "overview" && (
@@ -360,7 +378,7 @@ function ProductModal({ row, warehouses, categories, canWrite, onClose }: { row:
               <Field label="Barcode"><Input value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} /></Field>
               <Field label="Unit"><Input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} /></Field>
               <Field label="Reorder level"><Input type="number" step="any" min="0" value={form.low_stock_threshold} onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })} /></Field>
-              <Field label="Selling price (before VAT)"><Input type="number" step="0.01" min="0" value={form.sale_price} onChange={(e) => setForm({ ...form, sale_price: e.target.value })} /></Field>
+              <Field label={priceLabel}><Input type="number" step="0.01" min="0" value={form.sale_price} onChange={(e) => setForm({ ...form, sale_price: e.target.value })} /></Field>
               <Field label="VAT %"><Input type="number" step="0.01" min="0" max="100" value={form.tax_rate} onChange={(e) => setForm({ ...form, tax_rate: e.target.value })} /></Field>
             </div>
             <Field label="Description"><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
@@ -442,9 +460,18 @@ function ProductModal({ row, warehouses, categories, canWrite, onClose }: { row:
             </div>
           </div>
         </div>
+
+        <Attachments entityType="product" entityId={row.product_id} canWrite={canWrite} />
       </div>
     </Modal>
   );
+}
+
+/** Whether a product's price is the shelf price or the price before VAT is a
+ * business-wide setting; say which one the box means. */
+function usePriceLabel(): string {
+  const { data: branding } = useBranding();
+  return branding?.prices_include_tax ? "Selling price (incl. VAT)" : "Selling price (before VAT)";
 }
 
 function LocationsTab({ warehouses, report, canWrite }: { warehouses: Warehouse[]; report?: ValuationReport; canWrite: boolean }) {

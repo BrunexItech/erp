@@ -160,8 +160,31 @@ The till is a separate full-screen app at **/pos**.
 7. **End of day:** the chart icon shows the till summary — takings by cash,
    M-Pesa and card — to count the drawer and match the M-Pesa statement.
 
-Sales need a connection: the till shows a clear offline banner and pauses
-checkout rather than risk stock or the books diverging between tills.
+**Selling without internet.** If the connection drops the till keeps selling
+(cash, card, or M-Pesa by typing the customer's confirmation code). Each sale
+is saved on that device, the receipt prints with a "recorded offline"
+reference, and the sales are sent automatically, in order, when the connection
+returns — the top bar shows how many are waiting. Every sale carries its own
+reference, so one that is sent twice is still recorded once. Things to know:
+
+- The till must have been opened online at least once on that device (that is
+  when it saves the product list), and it uses the stock figures it last saw.
+- If two tills sell the last item while offline, the second sale is refused
+  when it syncs. It stays in the "waiting to send" list with the reason; receive
+  or adjust the stock and press **Send now**. Nothing is silently dropped.
+- Waiting sales live in that browser. Don't clear the browser's site data or
+  uninstall the app while sales are waiting.
+- M-Pesa phone prompts need a connection.
+
+**M-Pesa prompts (STK push).** Settings → M-Pesa: enter the paybill/till and
+the Daraja consumer key, consumer secret and passkey from
+developer.safaricom.co.ke, then switch it on. The till's M-Pesa option and
+every unpaid invoice then get a "send a prompt to the customer's phone"
+button; when the customer enters their PIN the payment is recorded with the
+M-Pesa code. The keys are stored encrypted (`ENCRYPTION_KEY`) and never shown
+again. Safaricom must be able to reach `API_PUBLIC_URL` over https, so results
+only arrive once the system is hosted publicly. This has been tested against a
+simulated Safaricom, not yet with live keys.
 
 ## Running it as a business (billing, support, operations)
 
@@ -207,6 +230,41 @@ the script. Copy the backups off the server.
 
 **Monitoring** — point your uptime monitor at `/health/ready` (checks the
 database). Unhandled errors are logged with a short reference the user sees.
+
+## Day-to-day operations
+
+- **Prices include VAT** (Settings → Company & documents): on for shops — the
+  price typed is what the customer pays and VAT is worked out from inside it,
+  so 2 × 116.00 is exactly 232.00. Off for business-to-business, where VAT is
+  added on top. Applies to the till, invoices, quotes and recurring invoices.
+- **Stock take** (Inventory → Stock take): start a count for a shop (all of it
+  or one category), type what is on the shelf, save as you go, then post. Only
+  the difference between what was expected when the sheet was made and what
+  was counted is adjusted, so sales made during the count are not undone. The
+  value of the difference posts to the ledger.
+- **Reorder** (Inventory → Reorder): everything at or below its reorder level
+  with a suggested quantity; tick lines to create a draft purchase order.
+- **Returns to suppliers** (Purchasing → Returns to suppliers): raises a debit
+  note, takes the goods out of stock and reduces what is owed on the bill.
+- **Recurring invoices** (Sales → Recurring): weekly, monthly, quarterly or
+  yearly; optionally emailed. Raise them from the screen, or daily by cron
+  (missed days are caught up):
+
+  ```bash
+  5 6 * * * cd /srv/erp && docker compose exec -T backend python -m app.cli recurring-invoices
+  ```
+- **Files**: attach PDFs, images, spreadsheets or documents (10 MB each) to
+  invoices, supplier bills and products. They are private to the business.
+- **Product pictures**: add one from the product window; it shows in the
+  product list and on the till.
+
+## Data isolation between businesses
+
+Every table that holds a business's data has Postgres Row-Level Security, and
+every request runs as the restricted `erp_app` database role with that
+business's id set — so even a query that forgot its filter cannot return
+another business's rows. The role is created by the migrations; `DB_APP_ROLE`
+names it. `tests/test_tenancy.py` proves it against a real database.
 
 ## Finance: reconciliation, VAT, year end
 
