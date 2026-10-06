@@ -265,3 +265,17 @@ class PosReceiptOut(BaseModel):
     amount_tendered: Decimal
     change_due: Decimal
     issued_at: datetime
+
+
+class EmailDocumentRequest(BaseModel):
+    to: str | None = None  # defaults to the customer's email on file
+    cc: list[str] = []
+    message: str = ""
+    start: date | None = None  # statements only
+    end: date | None = None
+
+
+class EmailDocumentResult(BaseModel):
+    to: str
+    delivered: bool  # False = email isn't configured; the message was saved to the outbox
+    backend: str

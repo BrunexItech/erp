@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
@@ -115,6 +115,28 @@ def require_feature(*module_keys: str):
                 f"workspace package does not include: {', '.join(module_keys)}",
             )
         return actor
+
+    return checker
+
+
+def module_access(feature: str, permission_prefix: str | None = None):
+    """Router-level guard: the workspace must have the module, and the member
+    must hold `<prefix>.read` to view or `<prefix>.write` to change anything.
+    Applied once per router in main.py so no endpoint can forget it — before
+    this, a "viewer" could post an invoice because only the feature was checked.
+    """
+    prefix = permission_prefix or feature
+
+    async def checker(request: Request, actor: Actor = Depends(get_actor)) -> Actor:
+        if feature not in actor.features:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"workspace package does not include: {feature}")
+        if "*" in actor.permissions:
+            return actor
+        needed = f"{prefix}.read" if request.method in ("GET", "HEAD", "OPTIONS") else f"{prefix}.write"
+        # Write access implies read access.
+        if needed in actor.permissions or (needed.endswith(".read") and f"{prefix}.write" in actor.permissions):
+            return actor
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"your role doesn't allow this (needs {needed})")
 
     return checker
 

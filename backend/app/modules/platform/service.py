@@ -17,7 +17,6 @@ from app.modules.platform.models import Package, User, Workspace, WorkspaceMembe
 from app.modules.platform.schemas import (
     BrandingUpdate,
     LoginRequest,
-    MemberInvite,
     SignupRequest,
     TokenResponse,
 )
@@ -28,11 +27,15 @@ class PlatformService:
         self.session = session
 
     async def signup(self, payload: SignupRequest) -> TokenResponse:
+        email = payload.email.lower().strip()
         existing = (
-            await self.session.execute(select(User).where(User.email == payload.email))
+            await self.session.execute(select(User).where(User.email == email))
         ).scalar_one_or_none()
         if existing is not None:
             raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
+        from app.modules.platform.accounts import validate_password
+
+        validate_password(payload.password)
 
         default_package = (
             await self.session.execute(select(Package).where(Package.is_default == True))  # noqa: E712
@@ -44,7 +47,7 @@ class PlatformService:
             )
 
         user = User(
-            email=payload.email,
+            email=email,
             hashed_password=hash_password(payload.password),
             full_name=payload.full_name,
         )
@@ -77,7 +80,7 @@ class PlatformService:
 
     async def login(self, payload: LoginRequest) -> TokenResponse:
         user = (
-            await self.session.execute(select(User).where(User.email == payload.email))
+            await self.session.execute(select(User).where(User.email == payload.email.lower().strip()))
         ).scalar_one_or_none()
         if user is None or not verify_password(payload.password, user.hashed_password):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
@@ -121,35 +124,6 @@ class PlatformService:
             }
             for member, workspace in rows.all()
         ]
-
-    async def invite_member(self, workspace_id: str, payload: MemberInvite) -> WorkspaceMember:
-        user = (
-            await self.session.execute(select(User).where(User.email == payload.email))
-        ).scalar_one_or_none()
-        if user is None:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND,
-                "no user with that email — they must sign up first",
-            )
-
-        existing = (
-            await self.session.execute(
-                select(WorkspaceMember).where(
-                    WorkspaceMember.workspace_id == workspace_id,
-                    WorkspaceMember.user_id == user.id,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "already a member")
-
-        membership = WorkspaceMember(
-            workspace_id=workspace_id, user_id=user.id, role=payload.role
-        )
-        self.session.add(membership)
-        await self.session.commit()
-        await self.session.refresh(membership)
-        return membership
 
     async def get_workspace(self, workspace_id: str) -> Workspace:
         workspace = (

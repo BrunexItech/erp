@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import enum
 
+from datetime import datetime
+
 from sqlalchemy import JSON, Boolean, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -138,3 +140,44 @@ class WorkspaceMember(TenantModel):
             else:
                 base.discard(perm)
         return base
+
+
+class AuthTokenPurpose(str, enum.Enum):
+    password_reset = "password_reset"
+    invitation = "invitation"
+
+
+class AuthToken(Base):
+    """Single-use, expiring token behind a password-reset or invitation link.
+    Only a SHA-256 of the token is stored — a leaked database can't be used to
+    reset anyone's password or join a workspace."""
+
+    __tablename__ = "auth_tokens"
+
+    purpose: Mapped[AuthTokenPurpose]
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # Invitations only: where the invitee lands, and as what.
+    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspaces.id"), nullable=True, index=True)
+    role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    invited_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    expires_at: Mapped[datetime]
+    used_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class EmailLog(Base):
+    """Every email the system tried to send — who to, what, and whether it
+    actually left (or was only written to the outbox)."""
+
+    __tablename__ = "email_log"
+
+    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspaces.id"), nullable=True, index=True)
+    to: Mapped[str] = mapped_column(String(500))
+    subject: Mapped[str] = mapped_column(String(300))
+    kind: Mapped[str] = mapped_column(String(32))  # invoice | statement | quote | invitation | password_reset
+    reference: Mapped[str] = mapped_column(String(64), default="")
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False)
+    backend: Mapped[str] = mapped_column(String(16), default="")
+    error: Mapped[str] = mapped_column(String(500), default="")
+    sent_by: Mapped[str | None] = mapped_column(String(36), nullable=True)

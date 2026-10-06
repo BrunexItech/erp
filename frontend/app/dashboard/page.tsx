@@ -14,8 +14,10 @@ export default function DashboardPage() {
   const { data: me } = useMe();
   const { data: branding } = useBranding();
   const features = new Set(me?.features ?? []);
-  const hasAccounting = features.has("accounting");
-  const hasSales = features.has("sales");
+  const can = (p: string) => !!me && (me.permissions.includes("*") || me.permissions.includes(p));
+  // Staff without ledger access get the quick links, not a wall of 403s.
+  const hasAccounting = features.has("accounting") && can("accounting.read");
+  const hasSales = features.has("sales") && can("sales.read");
   const currency = branding?.currency;
 
   const { data: tb } = useApi<TrialBalanceRow[]>(hasAccounting ? "/accounting/trial-balance" : null);

@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useBranding, useUpdateBranding } from "@/lib/api/hooks";
-import { Button, Card, ErrorBanner, Field, Input, PageHeader, Select, Textarea } from "@/components/om/primitives";
+import { useBranding, useMe, useUpdateBranding } from "@/lib/api/hooks";
+import { Button, Card, ErrorBanner, Field, Input, PageHeader, Select, Tabs, Textarea } from "@/components/om/primitives";
+import { SecurityTab } from "@/components/settings/SecurityTab";
+import { TeamTab } from "@/components/settings/TeamTab";
 import { errorMessage } from "@/lib/api/query";
 import { DesignPicker } from "@/components/branding/DesignPicker";
 import { LogoUploader } from "@/components/branding/LogoUploader";
@@ -10,7 +12,33 @@ import type { Branding } from "@/lib/api/types";
 
 type Form = Omit<Branding, "logo_url"> & { logo_url: string };
 
+type Tab = "company" | "team" | "security";
+
 export default function SettingsPage() {
+  const { data: me } = useMe();
+  const isAdmin = !!me?.permissions.includes("*");
+  const [tab, setTab] = useState<Tab | null>(null);
+  const active: Tab = tab ?? (isAdmin ? "company" : "security");
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <PageHeader title="Settings" description="Your company profile, your team, and your own sign-in." />
+      <Tabs<Tab>
+        value={active}
+        onChange={setTab}
+        tabs={[
+          ...(isAdmin ? [{ key: "company" as Tab, label: "Company & documents" }] : []),
+          { key: "team" as Tab, label: "Team" },
+          { key: "security" as Tab, label: "Security" },
+        ]}
+      />
+      {active === "company" && <CompanyTab />}
+      {active === "team" && <TeamTab />}
+      {active === "security" && <SecurityTab />}
+    </div>
+  );
+}
+
+function CompanyTab() {
   const { data: branding, isLoading } = useBranding();
   const updateBranding = useUpdateBranding();
   const [form, setForm] = useState<Form | null>(null);
@@ -48,8 +76,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-      <PageHeader title="Company settings" description="Your letterhead, tax details and payment instructions — printed on every invoice, quote, statement, receipt and payslip." />
+    <div className="space-y-6">
       <form onSubmit={onSubmit} className="space-y-6">
         <Card className="space-y-4 p-6">
           <h2 className="text-sm font-semibold text-brand">Company</h2>

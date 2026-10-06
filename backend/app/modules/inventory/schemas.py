@@ -1,18 +1,37 @@
+from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.modules.inventory.models import StockMovementType, StockTransferStatus, ValuationMethod
 
 
 class ProductCreate(BaseModel):
-    sku: str
-    name: str
+    sku: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
     barcode: str | None = None
+    category: str = ""
+    description: str = ""
+    unit: str = "pcs"
     valuation_method: ValuationMethod = ValuationMethod.weighted_average
     sale_price: Decimal = Decimal("0")
     tax_rate: Decimal = Decimal("0")
     low_stock_threshold: Decimal = Decimal("0")
+
+
+class ProductUpdate(BaseModel):
+    """SKU and valuation method are fixed once a product exists — changing
+    either would silently re-key or re-cost its whole stock history."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    barcode: str | None = None
+    category: str | None = None
+    description: str | None = None
+    unit: str | None = None
+    sale_price: Decimal | None = Field(default=None, ge=0)
+    tax_rate: Decimal | None = Field(default=None, ge=0, le=1)
+    low_stock_threshold: Decimal | None = Field(default=None, ge=0)
+    is_active: bool | None = None
 
 
 class ProductOut(BaseModel):
@@ -20,6 +39,9 @@ class ProductOut(BaseModel):
     sku: str
     name: str
     barcode: str | None
+    category: str
+    description: str
+    unit: str
     valuation_method: ValuationMethod
     sale_price: Decimal
     tax_rate: Decimal
@@ -57,6 +79,7 @@ class StockAdjustmentRequest(BaseModel):
 
 class StockMovementOut(BaseModel):
     id: str
+    created_at: datetime
     product_id: str
     warehouse_id: str
     type: StockMovementType

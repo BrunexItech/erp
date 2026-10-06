@@ -10,6 +10,8 @@ from app.modules.sales.schemas import (
     CreditNoteOut,
     CustomerPaymentCreate,
     DeliveryCreate,
+    EmailDocumentRequest,
+    EmailDocumentResult,
     InvoiceCreate,
     InvoiceDetailOut,
     InvoiceOut,
@@ -190,6 +192,43 @@ async def download_receipt_pdf(
 ):
     service = SalesService(session, actor.workspace_id)
     return _pdf(await service.receipt_pdf(payment_id), f"receipt-{payment_id[:8]}")
+
+
+@router.post("/invoices/{invoice_id}/email", response_model=EmailDocumentResult)
+async def email_invoice(
+    invoice_id: str,
+    payload: EmailDocumentRequest,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    return await SalesService(session, actor.workspace_id).email_document(
+        kind="invoice", document_id=invoice_id, to=payload.to, cc=payload.cc, message=payload.message, sent_by=actor.user_id
+    )
+
+
+@router.post("/quotes/{quote_id}/email", response_model=EmailDocumentResult)
+async def email_quote(
+    quote_id: str,
+    payload: EmailDocumentRequest,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    return await SalesService(session, actor.workspace_id).email_document(
+        kind="quote", document_id=quote_id, to=payload.to, cc=payload.cc, message=payload.message, sent_by=actor.user_id
+    )
+
+
+@router.post("/customers/{party_id}/statement/email", response_model=EmailDocumentResult)
+async def email_statement(
+    party_id: str,
+    payload: EmailDocumentRequest,
+    actor: Actor = Depends(get_actor),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    return await SalesService(session, actor.workspace_id).email_document(
+        kind="statement", document_id=party_id, to=payload.to, cc=payload.cc, message=payload.message,
+        sent_by=actor.user_id, start=payload.start, end=payload.end,
+    )
 
 
 # ------------------------------------------------------------ credit notes

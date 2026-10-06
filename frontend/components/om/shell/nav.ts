@@ -20,7 +20,7 @@ export interface NavItem {
   label: string;
   icon: LucideIcon;
   moduleKey: ModuleKey | null; // null = always visible
-  permission?: string; // hide unless the member has it (or "*")
+  permission?: string; // hide unless the member's role grants it ("x.write" also satisfies "x.read")
   keywords?: string; // extra words for the command palette
 }
 
@@ -34,29 +34,29 @@ export const NAV_GROUPS: NavGroup[] = [
     label: null,
     items: [
       { href: "/dashboard", label: "Overview", icon: LayoutDashboard, moduleKey: null, keywords: "home dashboard kpi" },
-      { href: "/pos", label: "Point of Sale", icon: Store, moduleKey: "pos", keywords: "till cashier checkout register" },
+      { href: "/pos", label: "Point of Sale", icon: Store, moduleKey: "pos", permission: "sales.write", keywords: "till cashier checkout register" },
     ],
   },
   {
     label: "Customers & Sales",
     items: [
-      { href: "/dashboard/crm", label: "CRM", icon: Users, moduleKey: "crm", keywords: "contacts customers leads deals" },
-      { href: "/dashboard/sales", label: "Sales & Invoicing", icon: Receipt, moduleKey: "sales", keywords: "invoice quote credit note receivables statement" },
+      { href: "/dashboard/crm", label: "CRM", icon: Users, moduleKey: "crm", permission: "crm.read", keywords: "contacts customers leads deals" },
+      { href: "/dashboard/sales", label: "Sales & Invoicing", icon: Receipt, moduleKey: "sales", permission: "sales.read", keywords: "invoice quote credit note receivables statement" },
     ],
   },
   {
     label: "Operations",
     items: [
-      { href: "/dashboard/purchasing", label: "Purchasing", icon: ShoppingCart, moduleKey: "purchasing", keywords: "po bills suppliers payables expenses" },
-      { href: "/dashboard/inventory", label: "Inventory", icon: Boxes, moduleKey: "inventory", keywords: "stock products warehouses transfers" },
-      { href: "/dashboard/manufacturing", label: "Manufacturing", icon: Factory, moduleKey: "manufacturing", keywords: "bom work orders production" },
+      { href: "/dashboard/purchasing", label: "Purchasing", icon: ShoppingCart, moduleKey: "purchasing", permission: "purchasing.read", keywords: "po bills suppliers payables expenses" },
+      { href: "/dashboard/inventory", label: "Inventory", icon: Boxes, moduleKey: "inventory", permission: "inventory.read", keywords: "stock products warehouses transfers" },
+      { href: "/dashboard/manufacturing", label: "Manufacturing", icon: Factory, moduleKey: "manufacturing", permission: "manufacturing.read", keywords: "bom work orders production" },
     ],
   },
   {
     label: "Finance",
     items: [
-      { href: "/dashboard/accounting", label: "Accounting", icon: BarChart3, moduleKey: "accounting", keywords: "ledger journal profit loss balance sheet trial" },
-      { href: "/dashboard/assets", label: "Fixed Assets", icon: Building2, moduleKey: "assets", keywords: "depreciation register" },
+      { href: "/dashboard/accounting", label: "Accounting", icon: BarChart3, moduleKey: "accounting", permission: "accounting.read", keywords: "ledger journal profit loss balance sheet trial" },
+      { href: "/dashboard/assets", label: "Fixed Assets", icon: Building2, moduleKey: "assets", permission: "assets.read", keywords: "depreciation register" },
     ],
   },
   {

@@ -68,6 +68,7 @@ export default function PosTerminal() {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [customerId, setCustomerId] = useState("");
   const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("");
   const [flash, setFlash] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
   const [receipt, setReceipt] = useState<ReceiptData | null>(null);
@@ -120,10 +121,11 @@ export default function PosTerminal() {
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = (products ?? []).filter((p) => p.is_active);
+    const list = (products ?? []).filter((p) => p.is_active && (!category || p.category === category));
     if (!q) return list;
     return list.filter((p) => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || (p.barcode ?? "").includes(q));
-  }, [products, search]);
+  }, [products, search, category]);
+  const categories = useMemo(() => Array.from(new Set((products ?? []).filter((p) => p.is_active && p.category).map((p) => p.category))).sort(), [products]);
 
   const totals = useMemo(() => {
     let subtotal = 0;
@@ -295,6 +297,22 @@ export default function PosTerminal() {
               <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg bg-amber-100 px-3 py-1.5 text-sm text-amber-800">{flash}</span>
             )}
           </form>
+
+          {tillId && categories.length > 1 && (
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+              {["", ...categories].map((c) => (
+                <button
+                  key={c || "all"}
+                  onClick={() => { setCategory(c); focusScan(); }}
+                  className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium transition ${
+                    category === c ? "bg-navy-900 text-white" : "bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-slate-300"
+                  }`}
+                >
+                  {c || "All"}
+                </button>
+              ))}
+            </div>
+          )}
 
           {!tillId ? (
             <div className="m-auto max-w-sm text-center">

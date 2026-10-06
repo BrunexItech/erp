@@ -1,18 +1,27 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.actor import Actor, get_actor, get_current_user, get_tenant_session, require_permission
-from app.core import media
+from app.core import media, ratelimit
 from app.core.db import get_session
 from app.modules.platform.models import User
+from app.modules.platform.accounts import AccountService
 from app.modules.platform.schemas import (
+    AcceptInvite,
     BrandingOut,
     BrandingUpdate,
+    ChangePassword,
+    ForgotPassword,
+    InvitationInfo,
+    InvitationOut,
+    InviteResult,
     LoginRequest,
     MemberInvite,
     MemberOut,
     RefreshRequest,
+    ResetPassword,
+    RoleUpdate,
     SignupRequest,
     TokenResponse,
     WorkspaceOut,
@@ -28,7 +37,10 @@ async def signup(payload: SignupRequest, session: AsyncSession = Depends(get_ses
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, session: AsyncSession = Depends(get_session)):
+async def login(payload: LoginRequest, request: Request, session: AsyncSession = Depends(get_session)):
+    # 10 tries per 15 minutes per account-and-address: slows password guessing
+    # to a crawl without locking out someone who mistypes a few times.
+    await ratelimit.hit(f"login:{payload.email.lower()}:{ratelimit.client_ip(request)}", limit=10, window_seconds=900)
     return await PlatformService(session).login(payload)
 
 
@@ -118,13 +130,94 @@ async def serve_logo(filename: str):
     return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
-@router.post("/workspaces/members", response_model=MemberOut)
+# ----------------------------------------------------------------- team
+
+
+@router.get("/workspaces/members", response_model=list[MemberOut])
+async def list_members(actor: Actor = Depends(get_actor), session: AsyncSession = Depends(get_tenant_session)):
+    return await AccountService(session).list_members(actor.workspace_id)
+
+
+@router.post("/workspaces/members", response_model=InviteResult)
 async def invite_member(
     payload: MemberInvite,
     actor: Actor = Depends(require_permission("*")),
+    user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_session),
 ):
-    membership = await PlatformService(session).invite_member(actor.workspace_id, payload)
-    return MemberOut(
-        id=membership.id, user_id=membership.user_id, email=payload.email, role=membership.role
-    )
+    return await AccountService(session).invite(actor.workspace_id, payload.email, payload.role, user, actor.role)
+
+
+@router.patch("/workspaces/members/{member_id}", response_model=MemberOut)
+async def change_member_role(
+    member_id: str,
+    payload: RoleUpdate,
+    actor: Actor = Depends(require_permission("*")),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    service = AccountService(session)
+    await service.change_role(actor.workspace_id, member_id, payload.role, actor.role)
+    return next(m for m in await service.list_members(actor.workspace_id) if m["id"] == member_id)
+
+
+@router.delete("/workspaces/members/{member_id}")
+async def remove_member(
+    member_id: str,
+    actor: Actor = Depends(require_permission("*")),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    await AccountService(session).remove_member(actor.workspace_id, member_id, actor.role)
+    return {"ok": True}
+
+
+@router.get("/workspaces/invitations", response_model=list[InvitationOut])
+async def list_invitations(actor: Actor = Depends(require_permission("*")), session: AsyncSession = Depends(get_tenant_session)):
+    return await AccountService(session).list_invitations(actor.workspace_id)
+
+
+@router.delete("/workspaces/invitations/{invitation_id}")
+async def revoke_invitation(
+    invitation_id: str,
+    actor: Actor = Depends(require_permission("*")),
+    session: AsyncSession = Depends(get_tenant_session),
+):
+    await AccountService(session).revoke_invitation(actor.workspace_id, invitation_id)
+    return {"ok": True}
+
+
+@router.get("/auth/invitations/{token}", response_model=InvitationInfo)
+async def invitation_info(token: str, session: AsyncSession = Depends(get_session)):
+    return await AccountService(session).invitation_info(token)
+
+
+@router.post("/auth/accept-invite", response_model=TokenResponse)
+async def accept_invitation(payload: AcceptInvite, session: AsyncSession = Depends(get_session)):
+    return await AccountService(session).accept_invitation(payload.token, payload.full_name, payload.password)
+
+
+# ------------------------------------------------------------- passwords
+
+
+@router.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPassword, request: Request, session: AsyncSession = Depends(get_session)):
+    await ratelimit.hit(f"forgot:{payload.email.lower()}", limit=3, window_seconds=3600)
+    await ratelimit.hit(f"forgot-ip:{ratelimit.client_ip(request)}", limit=20, window_seconds=3600)
+    await AccountService(session).forgot_password(payload.email)
+    # Same answer whether or not the address exists.
+    return {"ok": True}
+
+
+@router.post("/auth/reset-password")
+async def reset_password(payload: ResetPassword, session: AsyncSession = Depends(get_session)):
+    await AccountService(session).reset_password(payload.token, payload.password)
+    return {"ok": True}
+
+
+@router.post("/auth/change-password")
+async def change_password(
+    payload: ChangePassword,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await AccountService(session).change_password(user, payload.current_password, payload.new_password)
+    return {"ok": True}

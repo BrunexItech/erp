@@ -24,7 +24,7 @@ export default function LoginPage() {
       const tokens = await http.post<{ access_token: string; refresh_token: string }>(
         "/auth/login",
         { email, password },
-        { workspaceScoped: false }
+        { workspaceScoped: false, skipRetry: true }
       );
       session.setTokens(tokens.access_token, tokens.refresh_token);
 
@@ -52,7 +52,10 @@ export default function LoginPage() {
             <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
           <div>
-            <Label>Password</Label>
+            <div className="flex items-center justify-between">
+              <Label>Password</Label>
+              <Link href="/forgot-password" className="mb-1.5 text-xs font-medium text-brand hover:underline">Forgot password?</Link>
+            </div>
             <Input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
           <ErrorBanner message={error} />

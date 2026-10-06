@@ -29,6 +29,7 @@ import {
 } from "@/components/om/primitives";
 import { OrderManagePanel } from "@/components/sales/OrderManagePanel";
 import { DocumentFormModal } from "@/components/sales/DocumentForm";
+import { EmailDialog } from "@/components/sales/EmailDialog";
 import { INVOICE_TONE, InvoiceDetailModal, isOverdue } from "@/components/sales/InvoiceDetail";
 import { errorMessage, openFile, useApi, useApiMutation } from "@/lib/api/query";
 import { fmtDate, fmtMoney, fmtQty, humanize, monthStart, num, today, yearStart } from "@/lib/format";
@@ -204,6 +205,7 @@ function QuotesTab({ currency }: { currency?: string }) {
   const names = usePartyNames();
   const [showNew, setShowNew] = useState(false);
   const [openInvoice, setOpenInvoice] = useState<string | null>(null);
+  const [emailQuote, setEmailQuote] = useState<Quote | null>(null);
   const [error, setError] = useState<string | null>(null);
   const setStatus = useApiMutation<{ id: string; status: string }>("post", (b) => `/sales/quotes/${b.id}/status`, [["sales"]]);
   const convert = useApiMutation<{ id: string }, Invoice>("post", (b) => `/sales/quotes/${b.id}/convert`, [["sales"], ["accounting"]]);
@@ -259,6 +261,9 @@ function QuotesTab({ currency }: { currency?: string }) {
                       <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => openFile(`/sales/quotes/${q.id}/pdf`)}>
                         PDF
                       </Button>
+                      {q.status !== "converted" && q.status !== "declined" && (
+                        <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => setEmailQuote(q)}>Email</Button>
+                      )}
                       {q.status === "draft" && (
                         <Button variant="secondary" className="px-2 py-1 text-xs" onClick={() => act(() => setStatus.mutateAsync({ id: q.id, status: "sent" }))}>
                           Mark sent
@@ -296,6 +301,9 @@ function QuotesTab({ currency }: { currency?: string }) {
         )}
       </Card>
       <DocumentFormModal kind="quote" open={showNew} onClose={() => setShowNew(false)} currency={currency} />
+      {emailQuote && (
+        <EmailDialog open onClose={() => setEmailQuote(null)} title={`Email ${emailQuote.quote_no}`} endpoint={`/sales/quotes/${emailQuote.id}/email`} />
+      )}
       <InvoiceDetailModal invoiceId={openInvoice} onClose={() => setOpenInvoice(null)} currency={currency} />
     </div>
   );

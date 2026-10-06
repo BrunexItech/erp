@@ -26,7 +26,7 @@ export default function SignupPage() {
       const tokens = await http.post<{ access_token: string; refresh_token: string }>(
         "/auth/signup",
         { email, password, full_name: fullName, workspace_name: workspaceName },
-        { workspaceScoped: false }
+        { workspaceScoped: false, skipRetry: true }
       );
       session.setTokens(tokens.access_token, tokens.refresh_token);
 

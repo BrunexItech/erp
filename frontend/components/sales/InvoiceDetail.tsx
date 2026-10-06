@@ -16,6 +16,7 @@ import {
   Th,
 } from "@/components/om/primitives";
 import { errorMessage, openFile, useApi, useApiMutation } from "@/lib/api/query";
+import { EmailDialog } from "./EmailDialog";
 import { fmtDate, fmtMoney, fmtQty, humanize, num, today } from "@/lib/format";
 import type { CreditNote, InvoiceDetail as InvoiceDetailT, Payment, Warehouse } from "@/lib/api/types";
 
@@ -44,6 +45,7 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
   const voidInvoice = useApiMutation<{ reason: string }>("post", () => `/sales/invoices/${invoiceId}/void`, REFRESH);
 
   const [panel, setPanel] = useState<"none" | "pay" | "credit" | "void">("none");
+  const [emailing, setEmailing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("mpesa");
@@ -101,6 +103,7 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
             <Button variant="secondary" onClick={() => openFile(`/sales/invoices/${invoice.id}/pdf`)}>
               Download PDF
             </Button>
+            {invoice.status !== "void" && <Button variant="secondary" onClick={() => setEmailing(true)}>Email to customer</Button>}
             {open && <Button onClick={() => { setAmount(String(balance)); setPanel("pay"); }}>Record payment</Button>}
             {invoice.status !== "void" && num(invoice.amount_credited) < num(invoice.total) && (
               <Button variant="secondary" onClick={() => setPanel("credit")}>Issue credit note</Button>
@@ -306,6 +309,8 @@ export function InvoiceDetailModal({ invoiceId, onClose, currency }: { invoiceId
               </Table>
             </div>
           )}
+
+          <EmailDialog open={emailing} onClose={() => setEmailing(false)} title={`Email ${invoice.invoice_no}`} endpoint={`/sales/invoices/${invoice.id}/email`} />
 
           {(invoice.notes || invoice.terms) && (
             <div className="grid gap-4 text-sm text-slate-600 dark:text-slate-300 sm:grid-cols-2">

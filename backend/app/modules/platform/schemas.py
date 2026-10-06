@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field
 
 from app.modules.platform.models import WorkspaceRole
@@ -44,10 +46,62 @@ class MemberOut(BaseModel):
     id: str
     user_id: str
     email: str
+    full_name: str = ""
     role: WorkspaceRole
+    is_active: bool = True
+    joined_at: datetime | None = None
 
     class Config:
         from_attributes = True
+
+
+class InviteResult(BaseModel):
+    email: str
+    role: WorkspaceRole
+    invite_link: str  # shown to the inviter so it can also be shared by WhatsApp/SMS
+    email_delivered: bool
+
+
+class InvitationOut(BaseModel):
+    id: str
+    email: str
+    role: str | None
+    expires_at: datetime
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RoleUpdate(BaseModel):
+    role: WorkspaceRole
+
+
+class InvitationInfo(BaseModel):
+    email: str
+    workspace_name: str
+    role: str | None
+    has_account: bool
+
+
+class AcceptInvite(BaseModel):
+    token: str
+    full_name: str = ""
+    password: str
+
+
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+
+class ResetPassword(BaseModel):
+    token: str
+    password: str
+
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class BrandingUpdate(BaseModel):

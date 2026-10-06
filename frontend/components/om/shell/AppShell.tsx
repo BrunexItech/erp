@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LogOut, Menu, Search, ShieldCheck, X } from "lucide-react";
-import { useBranding, useMe } from "@/lib/api/hooks";
+import { useBranding, useMe, useWorkspaces } from "@/lib/api/hooks";
 import { mediaUrl } from "@/lib/api/http";
 import { useApi } from "@/lib/api/query";
 import { session } from "@/lib/session";
@@ -32,6 +32,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { data: me, isLoading, isError } = useMe();
   const { data: branding } = useBranding();
   const { data: user } = useApi<CurrentUser>("/auth/user");
+  const { data: workspaces } = useWorkspaces();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -66,9 +67,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const features = new Set(me?.features ?? []);
   const permissions = new Set(me?.permissions ?? []);
-  const visible = (item: NavItem) =>
-    (item.moduleKey === null || features.has(item.moduleKey)) &&
-    (!item.permission || permissions.has("*") || permissions.has(item.permission));
+  const allowed = (permission?: string) =>
+    !permission ||
+    permissions.has("*") ||
+    permissions.has(permission) ||
+    (permission.endsWith(".read") && permissions.has(permission.replace(/\.read$/, ".write")));
+  // A menu item needs both: the business has the module, and this person's
+  // role can open it — otherwise they'd click through to a page of errors.
+  const visible = (item: NavItem) => (item.moduleKey === null || features.has(item.moduleKey)) && allowed(item.permission);
   const groups = NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter(visible) })).filter((g) => g.items.length);
   const brandName = branding?.name || "ERP";
 
@@ -86,6 +92,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="text-[11px] capitalize text-slate-400">{me?.role ?? ""}</p>
         </div>
       </div>
+
+      {(workspaces?.length ?? 0) > 1 && (
+        <select
+          aria-label="Switch business"
+          value={me?.workspace_id ?? ""}
+          onChange={(e) => {
+            // A different business is a different set of data: reload so no
+            // cached figures from the previous one linger on screen.
+            session.setWorkspaceId(e.target.value);
+            window.location.href = "/dashboard";
+          }}
+          className="mb-3 w-full rounded-lg border-0 bg-navy-800 px-3 py-2 text-sm text-white ring-1 ring-navy-700"
+        >
+          {workspaces?.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+        </select>
+      )}
 
       <button
         onClick={() => setPaletteOpen(true)}

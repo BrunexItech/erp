@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useState } from "react";
-import { useCreatePurchaseOrder, useParties, usePurchaseOrders, useProducts, useVendorBills } from "@/lib/api/hooks";
+import { useCreatePurchaseOrder, useMe, useParties, usePurchaseOrders, useProducts, useVendorBills } from "@/lib/api/hooks";
 
 type Tab = "orders" | "bills" | "payables";
 
@@ -202,7 +202,9 @@ const BILL_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = 
 function BillsTab() {
   const { data: bills, isLoading } = useVendorBills();
   const { data: parties } = useParties();
-  const { data: accounts } = useApi<Account[]>("/accounting/accounts");
+  const { data: me } = useMe();
+  const canSeeAccounts = !!me && (me.permissions.includes("*") || me.permissions.includes("accounting.read"));
+  const { data: accounts } = useApi<Account[]>(canSeeAccounts ? "/accounting/accounts" : null);
   const create = useApiMutation("post", "/purchasing/vendor-bills", [["purchasing"], ["accounting"]]);
   const pay = useApiMutation("post", "/purchasing/vendor-bills/payments", [["purchasing"], ["accounting"]]);
   const [showNew, setShowNew] = useState(false);

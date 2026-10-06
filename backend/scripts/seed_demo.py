@@ -68,9 +68,10 @@ catalog = [("CEM-50", "Cement 50kg", 850, 620, "6161100000013"), ("MAB-30", "Mab
            ("NAIL-4", "Nails 4\" (kg)", 280, 190, "6161100000037"), ("PNT-4L", "Crown Paint 4L", 2350, 1700, "6161100000044"),
            ("ROD-12", "Steel rod Y12", 1150, 880, "6161100000051"), ("PIP-25", "PVC pipe 25mm", 420, 290, "6161100000068"),
            ("WHB-S", "Wheelbarrow standard", 5200, 3900, "6161100000075"), ("SND-T", "River sand (tonne)", 3200, 2300, "6161100000082")]
+CATEGORIES = {'CEM-50': 'Building', 'MAB-30': 'Roofing', 'NAIL-4': 'Hardware', 'PNT-4L': 'Paint', 'ROD-12': 'Building', 'PIP-25': 'Plumbing', 'WHB-S': 'Tools', 'SND-T': 'Building'}
 products = []
 for sku, name, price, cost, bc in catalog:
-    p = post("/inventory/products", {"sku": sku, "name": name, "sale_price": str(price), "tax_rate": "0.16", "barcode": bc, "low_stock_threshold": "10"})
+    p = post("/inventory/products", {"sku": sku, "name": name, "category": CATEGORIES[sku], "sale_price": str(price), "tax_rate": "0.16", "barcode": bc, "low_stock_threshold": "10"})
     products.append((p, price, cost))
     for wh, q in ((main, 400), (shop, 120)):
         post("/inventory/stock/adjustments", {"product_id": p["id"], "warehouse_id": wh["id"], "qty_delta": str(q), "unit_cost": str(cost), "is_opening": True, "reason": "opening"})

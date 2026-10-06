@@ -37,8 +37,12 @@ export interface Party {
   name: string;
   kind: "lead" | "customer" | "vendor" | "both";
   is_company: boolean;
+  tax_id: string | null;
   email: string | null;
   phone: string | null;
+  billing_address: string;
+  shipping_address: string;
+  created_at: string;
 }
 
 export interface Deal {
@@ -55,6 +59,9 @@ export interface Product {
   sku: string;
   name: string;
   barcode: string | null;
+  category: string;
+  description: string;
+  unit: string;
   valuation_method: "fifo" | "weighted_average";
   sale_price: string;
   tax_rate: string;
@@ -567,4 +574,84 @@ export interface WorkOrder {
   conversion_cost: string;
   unit_cost: string;
   notes: string;
+}
+
+export interface ValuationRow {
+  product_id: string;
+  sku: string;
+  name: string;
+  category: string;
+  unit: string;
+  is_active: boolean;
+  qty: string;
+  unit_cost: string;
+  value: string;
+  sale_price: string;
+  retail_value: string;
+  low_stock_threshold: string;
+  status: "ok" | "low" | "out";
+  locations: { warehouse_id: string; warehouse: string; qty: string }[];
+}
+
+export interface ValuationReport {
+  rows: ValuationRow[];
+  totals: { products: number; value: string; retail_value: string; low: number; out: number };
+  categories: string[];
+}
+
+export interface StockMovement {
+  id: string;
+  created_at: string;
+  product_id: string;
+  warehouse_id: string;
+  type: string;
+  qty_delta: string;
+  unit_cost: string;
+  balance_after: string;
+  ref_type: string;
+  ref_id: string;
+}
+
+export interface ImportReport {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: { row: number; error: string }[];
+}
+
+export interface Member {
+  id: string;
+  user_id: string;
+  email: string;
+  full_name: string;
+  role: "owner" | "admin" | "manager" | "staff" | "viewer";
+  is_active: boolean;
+  joined_at: string | null;
+}
+
+export interface Invitation {
+  id: string;
+  email: string;
+  role: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface Interaction {
+  id: string;
+  party_id: string;
+  type: "call" | "email" | "meeting" | "note";
+  summary: string;
+  occurred_at: string;
+  follow_up_at: string | null;
+  is_follow_up_done: boolean;
+}
+
+export interface CrmTask {
+  id: string;
+  party_id: string | null;
+  deal_id: string | null;
+  title: string;
+  due_date: string | null;
+  done: boolean;
 }

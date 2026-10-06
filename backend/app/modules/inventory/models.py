@@ -20,6 +20,9 @@ class Product(TenantModel):
     sku: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(200))
     barcode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    description: Mapped[str] = mapped_column(String(1000), default="")
+    unit: Mapped[str] = mapped_column(String(16), default="pcs")  # pcs, kg, m, box…
     valuation_method: Mapped[ValuationMethod] = mapped_column(
         default=ValuationMethod.weighted_average
     )

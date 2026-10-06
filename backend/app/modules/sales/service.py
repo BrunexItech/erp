@@ -1218,6 +1218,105 @@ class SalesService:
         buckets = aging["rows"][0] if aging["rows"] else {**empty_buckets(), "total": ZERO}
         return documents.render_statement(workspace=workspace, party=party, statement=statement, aging=buckets)
 
+    # ------------------------------------------------------------------ email
+
+    async def email_document(
+        self, *, kind: str, document_id: str, to: str | None, cc: list[str], message: str, sent_by: str,
+        start: date | None = None, end: date | None = None,
+    ) -> dict:
+        """Emails an invoice, quote or statement to the customer as a PDF, from
+        the business's name with replies going to its billing address."""
+        from html import escape
+
+        from app.core import mailer
+        from app.modules.platform.accounts import AccountService
+        from app.modules.sales import documents
+
+        workspace = await self._workspace()
+        currency = workspace.currency
+        if kind == "invoice":
+            invoice = await self.invoices.get(document_id)
+            if invoice is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "invoice not found")
+            if invoice.status == InvoiceStatus.void:
+                raise HTTPException(status.HTTP_409_CONFLICT, "a void invoice can't be sent")
+            party = await self._party(invoice.party_id)
+            number = invoice.invoice_no
+            pdf = await self.invoice_pdf(invoice.id)
+            balance = self.balance_due(invoice)
+            subject = f"Invoice {number} from {workspace.name}"
+            summary = (
+                f"<p>Please find attached invoice <b>{escape(number)}</b> for "
+                f"<b>{escape(documents.fmt_money(invoice.total, currency))}</b>."
+                + (f" The balance of <b>{escape(documents.fmt_money(balance, currency))}</b> is due on "
+                   f"<b>{escape(documents.fmt_date(invoice.due_date))}</b>.</p>" if balance > 0 else " It has been paid in full — thank you.</p>")
+            )
+        elif kind == "quote":
+            quote = await self.quotes.get(document_id)
+            if quote is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "quote not found")
+            party = await self._party(quote.party_id)
+            number = quote.quote_no
+            pdf = await self.quote_pdf(quote.id)
+            subject = f"Quotation {number} from {workspace.name}"
+            summary = (
+                f"<p>Please find attached our quotation <b>{escape(number)}</b> for "
+                f"<b>{escape(documents.fmt_money(quote.total, currency))}</b>, valid until "
+                f"<b>{escape(documents.fmt_date(quote.valid_until))}</b>.</p>"
+            )
+            if quote.status == QuoteStatus.draft:
+                quote.status = QuoteStatus.sent
+        elif kind == "statement":
+            party = await self._party(document_id)
+            end = end or date.today()
+            start = start or date(end.year, 1, 1)
+            number = f"statement-{end.isoformat()}"
+            pdf = await self.statement_pdf(party.id, start, end)
+            balance = await self.customer_balance(party.id)
+            subject = f"Statement of account from {workspace.name}"
+            summary = (
+                f"<p>Please find attached your statement of account to {escape(documents.fmt_date(end))}. "
+                f"Your balance is <b>{escape(documents.fmt_money(balance, currency))}</b>.</p>"
+            )
+        else:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown document type")
+
+        recipient = (to or party.email or "").strip()
+        if not recipient:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{party.name} has no email address — add one in CRM or type an address to send to",
+            )
+        note = f"<p>{escape(message).replace(chr(10), '<br>')}</p>" if message.strip() else ""
+        how_to_pay = ""
+        if kind != "quote" and workspace.mpesa_paybill:
+            how_to_pay = f"<p>Pay by M-Pesa Paybill <b>{escape(workspace.mpesa_paybill)}</b>" + (
+                f", account <b>{escape(number)}</b>.</p>" if kind == "invoice" else ".</p>"
+            )
+        result = await AccountService(self.session).send_logged(
+            mailer.Mail(
+                to=[recipient],
+                cc=[c for c in cc if c.strip()],
+                subject=subject,
+                html=mailer.layout(
+                    heading=subject,
+                    body_html=f"<p>Dear {escape(party.name)},</p>{note}{summary}{how_to_pay}"
+                              f"<p>Kind regards,<br>{escape(workspace.name)}</p>",
+                    brand=workspace.brand_color or "#1a7a8c",
+                    sender=" · ".join(b for b in [workspace.name, workspace.phone, workspace.billing_email] if b),
+                ),
+                text=f"{subject}. The document is attached as a PDF.",
+                reply_to=workspace.billing_email,
+                from_name=workspace.name,
+                attachments=[mailer.Attachment(filename=f"{number}.pdf", content=pdf)],
+            ),
+            kind=kind, reference=number, workspace_id=self.workspace_id, sent_by=sent_by,
+        )
+        await self.session.commit()
+        if result.backend == "smtp" and not result.delivered:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"the mail server rejected the message: {result.detail[:200]}")
+        return {"to": recipient, "delivered": result.delivered, "backend": result.backend}
+
     # ---------------------------------------------------------------- reports
 
     async def customer_balance(self, party_id: str) -> Decimal:

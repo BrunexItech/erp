@@ -14,5 +14,20 @@ class Settings(BaseSettings):
     # Uploaded files (company logos). Mount a persistent volume here in production.
     media_root: str = "media"
 
+    # Public address of the web app — used to build links in emails
+    # (password reset, invitations).
+    app_url: str = "http://localhost:3000"
+
+    # Outgoing email. With no SMTP host set, messages are written to
+    # <media_root>/outbox as .eml files instead of being sent, so development
+    # and demos work without a mail account and nothing is silently dropped.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    mail_from: str = "no-reply@localhost"
+    mail_from_name: str = "Business Suite"
+
 
 settings = Settings()

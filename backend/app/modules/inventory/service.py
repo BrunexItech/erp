@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.modules.inventory import valuation
 from app.modules.inventory.models import (
     Product,
     StockMovement,
+    StockLayer,
     StockMovementType,
     StockTransfer,
     StockTransferLine,
@@ -67,12 +68,100 @@ class InventoryService:
     async def warehouse_stock_for_product(self, product_id: str) -> list[WarehouseStock]:
         return list(await self.warehouse_stock.list(WarehouseStock.product_id == product_id))
 
+    async def _check_sku_limit(self, adding: int = 1) -> None:
+        from app.modules.platform.accounts import workspace_limit
+
+        limit = await workspace_limit(self.session, self.workspace_id, "max_sku")
+        if limit is None:
+            return
+        count = (
+            await self.session.execute(
+                select(func.count(Product.id)).where(Product.workspace_id == self.workspace_id)
+            )
+        ).scalar_one()
+        if count + adding > limit:
+            raise HTTPException(
+                status.HTTP_402_PAYMENT_REQUIRED,
+                f"your package allows {limit:,} products and you have {count:,} — upgrade to add more",
+            )
+
     async def create_product(self, payload: ProductCreate) -> Product:
+        await self._check_sku_limit()
+        if await self.products.list(Product.sku == payload.sku):
+            raise HTTPException(status.HTTP_409_CONFLICT, f"a product with SKU {payload.sku} already exists")
         product = Product(**payload.model_dump())
         await self.products.add(product)
         await self.session.commit()
         await self.session.refresh(product)
         return product
+
+    async def update_product(self, product_id: str, changes: dict) -> Product:
+        product = await self.products.get(product_id)
+        if product is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "product not found")
+        for key, value in changes.items():
+            setattr(product, key, value)
+        await self.session.commit()
+        await self.session.refresh(product)
+        return product
+
+    async def valuation_report(self) -> dict:
+        """Stock on hand and what it's worth, per product and per location —
+        the figure that must agree with the Inventory account in the ledger."""
+        products = sorted(await self.products.list(), key=lambda p: p.sku)
+        warehouses = {w.id: w for w in await self.warehouses.list()}
+        stock = await self.warehouse_stock.list()
+        by_product: dict[str, list[WarehouseStock]] = {}
+        for row in stock:
+            by_product.setdefault(row.product_id, []).append(row)
+
+        # FIFO products are valued from their remaining cost layers.
+        layer_rows = (
+            await self.session.execute(
+                select(
+                    StockLayer.product_id,
+                    func.coalesce(func.sum(StockLayer.qty_remaining * StockLayer.unit_cost), 0),
+                )
+                .where(StockLayer.workspace_id == self.workspace_id)
+                .group_by(StockLayer.product_id)
+            )
+        ).all()
+        fifo_value = {pid: Decimal(v) for pid, v in layer_rows}
+
+        rows = []
+        total_value = Decimal("0")
+        for p in products:
+            if p.valuation_method == ValuationMethod.fifo:
+                value = fifo_value.get(p.id, Decimal("0"))
+            else:
+                value = p.stock_qty * p.avg_cost
+            total_value += value
+            unit_cost = value / p.stock_qty if p.stock_qty else p.avg_cost
+            status_label = "out" if p.stock_qty <= 0 else "low" if p.stock_qty <= p.low_stock_threshold else "ok"
+            rows.append(
+                {
+                    "product_id": p.id, "sku": p.sku, "name": p.name, "category": p.category, "unit": p.unit,
+                    "is_active": p.is_active, "qty": p.stock_qty, "unit_cost": unit_cost, "value": value,
+                    "sale_price": p.sale_price, "retail_value": p.stock_qty * p.sale_price,
+                    "low_stock_threshold": p.low_stock_threshold, "status": status_label,
+                    "locations": [
+                        {"warehouse_id": s.warehouse_id, "warehouse": warehouses[s.warehouse_id].name if s.warehouse_id in warehouses else "", "qty": s.qty}
+                        for s in by_product.get(p.id, []) if s.qty
+                    ],
+                }
+            )
+        active = [r for r in rows if r["is_active"]]
+        return {
+            "rows": rows,
+            "totals": {
+                "products": len(active),
+                "value": total_value,
+                "retail_value": sum((r["retail_value"] for r in active), Decimal("0")),
+                "low": sum(1 for r in active if r["status"] == "low"),
+                "out": sum(1 for r in active if r["status"] == "out"),
+            },
+            "categories": sorted({r["category"] for r in rows if r["category"]}),
+        }
 
     async def create_warehouse(self, payload: WarehouseCreate) -> Warehouse:
         warehouse = Warehouse(**payload.model_dump())
